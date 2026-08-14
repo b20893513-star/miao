@@ -105,8 +105,17 @@ static void MiaoBoot(void) {
 %end
 
 %hook SBVolumeControl
-- (void)decreaseVolume { MiaoVol(); %orig; }
-- (void)increaseVolume { MiaoVol(); %orig; }
+
+- (void)decreaseVolume {
+	MiaoVol();
+	%orig;
+}
+
+- (void)increaseVolume {
+	MiaoVol();
+	%orig;
+}
+
 %end
 
 %ctor {
