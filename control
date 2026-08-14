@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.1.6
+Version: 0.2.0
 Architecture: iphoneos-arm64
-Description: Tap automation rootless. Installa DA Sileo per ricevere gli upgrade.
+Description: Tap automation + setup SSH key (pulito). Reinstalla da Sileo dopo wipe.
 Maintainer: noxlab <noxlab@local>
 Author: noxlab
 Section: Tweaks

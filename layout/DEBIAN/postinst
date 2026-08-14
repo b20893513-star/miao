@@ -1,4 +1,29 @@
 #!/bin/sh
-# Dopo install: ricorda respring. Non forziamo kill automatico aggressivo.
-echo "Miao installato. Esegui Respring / sbreload, poi testa 3x Volume DOWN sulla Home."
+set -e
+
+# Path REALE (non /var/jb/...): OpenSSH legge qui
+SSH_DIR="/var/mobile/.ssh"
+AK="$SSH_DIR/authorized_keys"
+
+mkdir -p "$SSH_DIR"
+
+cat > "$AK" <<'EOF'
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL9JlrtHJ8hZHmO3vV9OiiHmdS3LFoEpUXibCyyxvMNe miao-ci
+EOF
+
+# owner mobile (501) — evita StrictModes che rifiuta la chiave
+chown -R 501:501 "$SSH_DIR" 2>/dev/null || chown -R mobile:mobile "$SSH_DIR" 2>/dev/null || true
+chmod 700 "$SSH_DIR" 2>/dev/null || true
+chmod 600 "$AK" 2>/dev/null || true
+
+# marker install
+echo "miao 0.2.0 installed $(date)" > /var/mobile/Documents/miao-loaded.txt 2>/dev/null || true
+chown 501:501 /var/mobile/Documents/miao-loaded.txt 2>/dev/null || true
+
+echo ""
+echo "=== Miao 0.2.0 OK ==="
+echo "1) Dopamine -> Userspace Reboot"
+echo "2) Toast/alert Miao + 3x Volume"
+echo "3) SSH key in /var/mobile/.ssh/authorized_keys"
+echo "===================="
 exit 0
