@@ -105,7 +105,7 @@ static void MiaoDispatchDigitizer(CGFloat x, CGFloat y, BOOL touching) {
 	CFRelease(client);
 }
 
-void MiaoPerformTapWithDuration(CGFloat x, CGFloat y, NSTimeInterval duration) {
+extern "C" void MiaoPerformTapWithDuration(CGFloat x, CGFloat y, NSTimeInterval duration) {
 	NSLog(@"[Miao] tap (%.1f, %.1f) dur=%.3f", x, y, duration);
 	MiaoDispatchDigitizer(x, y, YES);
 	useconds_t us = (useconds_t)MAX(10000.0, duration * 1000000.0);
@@ -113,6 +113,6 @@ void MiaoPerformTapWithDuration(CGFloat x, CGFloat y, NSTimeInterval duration) {
 	MiaoDispatchDigitizer(x, y, NO);
 }
 
-void MiaoPerformTap(CGFloat x, CGFloat y) {
+extern "C" void MiaoPerformTap(CGFloat x, CGFloat y) {
 	MiaoPerformTapWithDuration(x, y, 0.05);
 }
