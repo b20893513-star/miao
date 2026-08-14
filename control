@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.2.1
+Version: 0.2.2
 Architecture: iphoneos-arm64
-Description: Tap automation rootless for Dopamine. Includes SSH key setup.
+Description: Tap automation rootless (safe boot, no system alert).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

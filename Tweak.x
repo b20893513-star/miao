@@ -1,228 +1,127 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
-#import <CoreFoundation/CFUserNotification.h>
 #import <notify.h>
 #import "TouchSim.h"
 
 static NSString * const kNotifyTap = @"com.noxlab.miao.tap";
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
-static UILabel *gToastLabel = nil;
-static BOOL gDidBootBanner = NO;
-static NSTimeInterval gLastVolNotif = 0;
+static NSTimeInterval gLastVol = 0;
+static BOOL gBootDone = NO;
 
-static void MiaoWriteMarker(NSString *note) {
-	NSString *msg = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], note ?: @""];
-	NSArray *paths = @[
-		@"/var/mobile/Documents/miao-loaded.txt",
-		@"/var/jb/var/mobile/Documents/miao-loaded.txt",
-		@"/tmp/miao-loaded.txt"
-	];
-	NSData *data = [msg dataUsingEncoding:NSUTF8StringEncoding];
-	for (NSString *p in paths) {
-		[data writeToFile:p atomically:YES];
-	}
-}
-
-static UIWindow *MiaoFindWindow(void) {
-	UIWindow *win = nil;
-	if (@available(iOS 13.0, *)) {
-		for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-			if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-			UIWindowScene *ws = (UIWindowScene *)scene;
-			for (UIWindow *w in ws.windows) {
-				if (w.isKeyWindow) return w;
-			}
-			if (ws.windows.count) win = ws.windows.firstObject;
-		}
-	}
-	if (!win) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-		win = UIApplication.sharedApplication.keyWindow;
-#pragma clang diagnostic pop
-	}
-	return win;
+static void MiaoMarker(NSString *note) {
+	NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], note ?: @""];
+	[line writeToFile:@"/var/mobile/Documents/miao-loaded.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
 static void MiaoToast(NSString *text) {
 	dispatch_async(dispatch_get_main_queue(), ^{
-		UIWindow *win = MiaoFindWindow();
+		UIWindow *win = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+		win = UIApplication.sharedApplication.keyWindow;
+#pragma clang diagnostic pop
 		if (!win) {
-			MiaoWriteMarker([@"toast-no-window: " stringByAppendingString:text ?: @""]);
+			for (UIWindow *w in UIApplication.sharedApplication.windows) {
+				if (w.isKeyWindow) { win = w; break; }
+			}
+		}
+		if (!win && UIApplication.sharedApplication.windows.count) {
+			win = UIApplication.sharedApplication.windows.firstObject;
+		}
+		if (!win) {
+			MiaoMarker([@"no-window " stringByAppendingString:text ?: @""]);
 			return;
 		}
-		if (!gToastLabel) {
-			gToastLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-			gToastLabel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
-			gToastLabel.textColor = [UIColor whiteColor];
-			gToastLabel.font = [UIFont boldSystemFontOfSize:14];
-			gToastLabel.textAlignment = NSTextAlignmentCenter;
-			gToastLabel.layer.cornerRadius = 10;
-			gToastLabel.clipsToBounds = YES;
-			gToastLabel.numberOfLines = 2;
-		}
-		gToastLabel.text = [NSString stringWithFormat:@"  %@  ", text];
-		[gToastLabel sizeToFit];
-		CGFloat w = MAX(170, gToastLabel.bounds.size.width + 24);
-		CGFloat h = MAX(36, gToastLabel.bounds.size.height + 12);
-		gToastLabel.frame = CGRectMake((win.bounds.size.width - w) / 2.0, 64, w, h);
-		if (!gToastLabel.superview) [win addSubview:gToastLabel];
-		[win bringSubviewToFront:gToastLabel];
-		gToastLabel.alpha = 1;
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			[UIView animateWithDuration:0.25 animations:^{ gToastLabel.alpha = 0; }];
+
+		UILabel *lab = [[UILabel alloc] initWithFrame:CGRectZero];
+		lab.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+		lab.textColor = UIColor.whiteColor;
+		lab.font = [UIFont boldSystemFontOfSize:15];
+		lab.textAlignment = NSTextAlignmentCenter;
+		lab.layer.cornerRadius = 10;
+		lab.clipsToBounds = YES;
+		lab.text = [NSString stringWithFormat:@"  %@  ", text];
+		[lab sizeToFit];
+		CGFloat w = MAX(180, lab.bounds.size.width + 28);
+		CGFloat h = MAX(40, lab.bounds.size.height + 14);
+		lab.frame = CGRectMake((win.bounds.size.width - w) / 2.0, 70, w, h);
+		[win addSubview:lab];
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			[lab removeFromSuperview];
 		});
 	});
 }
 
-static CGPoint MiaoReadTapPoint(void) {
-	CGRect bounds = UIScreen.mainScreen.bounds;
-	CGFloat defX = CGRectGetMidX(bounds);
-	CGFloat defY = CGRectGetMidY(bounds) * 0.35f;
-	NSString *path = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
-	NSString *jbPath = @"/var/jb/var/mobile/Library/Preferences/com.noxlab.miao.plist";
-	if ([[NSFileManager defaultManager] fileExistsAtPath:jbPath]) path = jbPath;
-	NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:path];
-	if (![prefs isKindOfClass:[NSDictionary class]]) return CGPointMake(defX, defY);
-	CGFloat x = prefs[@"TapX"] ? [prefs[@"TapX"] doubleValue] : defX;
-	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : defY;
-	return CGPointMake(x, y);
+static CGPoint MiaoPoint(void) {
+	CGRect b = UIScreen.mainScreen.bounds;
+	return CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b) * 0.35);
 }
 
-static void MiaoFireConfiguredTap(void) {
-	CGPoint p = MiaoReadTapPoint();
-	MiaoWriteMarker([NSString stringWithFormat:@"tap %.1f %.1f", p.x, p.y]);
-	MiaoToast([NSString stringWithFormat:@"Miao TAP (%.0f, %.0f)", p.x, p.y]);
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+static void MiaoFireTap(void) {
+	CGPoint p = MiaoPoint();
+	MiaoMarker([NSString stringWithFormat:@"tap %.0f %.0f", p.x, p.y]);
+	MiaoToast(@"Miao TAP");
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 		MiaoPerformTap(p.x, p.y);
 	});
 }
 
-static void MiaoOnVolumePulse(void) {
-	NSTimeInterval now = [NSDate date].timeIntervalSince1970;
-	// Debounce notifiche volume doppie
-	if (now - gLastVolNotif < 0.08) return;
-	gLastVolNotif = now;
+static void MiaoVol(void) {
+	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+	if (now - gLastVol < 0.12) return;
+	gLastVol = now;
 
-	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 1.5) {
+	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 1.6) {
 		gVolWindowStart = now;
 		gVolCount = 1;
-		MiaoWriteMarker(@"vol 1");
 		MiaoToast(@"Miao 1/3");
 		return;
 	}
-	gVolCount += 1;
-	MiaoWriteMarker([NSString stringWithFormat:@"vol %ld", (long)gVolCount]);
+	gVolCount++;
 	if (gVolCount < 3) {
 		MiaoToast([NSString stringWithFormat:@"Miao %ld/3", (long)gVolCount]);
 		return;
 	}
 	gVolCount = 0;
 	gVolWindowStart = 0;
-	MiaoFireConfiguredTap();
+	MiaoFireTap();
 }
 
-static void MiaoBootBanner(void) {
-	if (gDidBootBanner) return;
-	gDidBootBanner = YES;
-	MiaoWriteMarker(@"boot-banner");
-	MiaoToast(@"Miao attivo — 3x Volume");
-
-	// Alert di sistema: si vede anche se il toast fallisce
-	dispatch_async(dispatch_get_main_queue(), ^{
-		CFOptionFlags flags = 0;
-		CFUserNotificationDisplayAlert(
-			5.0,
-			0,
-			NULL,
-			NULL,
-			NULL,
-			CFSTR("Miao"),
-			CFSTR("Tweak caricato.\nPremi 3 volte Volume (su o giu) per un tap di prova."),
-			CFSTR("OK"),
-			NULL,
-			NULL,
-			&flags
-		);
-	});
-}
-
-static void MiaoOnSystemVolumeChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
-	(void)center; (void)observer; (void)name; (void)object; (void)userInfo;
-	MiaoOnVolumePulse();
+static void MiaoBoot(void) {
+	if (gBootDone) return;
+	gBootDone = YES;
+	MiaoMarker(@"boot ok");
+	MiaoToast(@"Miao OK - 3x Volume");
 }
 
 %hook SpringBoard
-
-- (void)applicationDidFinishLaunching:(id)application {
+- (void)applicationDidFinishLaunching:(id)app {
 	%orig;
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoBootBanner();
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		MiaoBoot();
 	});
 }
-
 %end
 
 %hook SBVolumeControl
-
-- (void)decreaseVolume {
-	MiaoOnVolumePulse();
-	%orig;
-}
-
-- (void)increaseVolume {
-	MiaoOnVolumePulse();
-	%orig;
-}
-
-%end
-
-%hook SBMediaController
-
-- (void)decreaseVolume {
-	MiaoOnVolumePulse();
-	%orig;
-}
-
-- (void)increaseVolume {
-	MiaoOnVolumePulse();
-	%orig;
-}
-
+- (void)decreaseVolume { MiaoVol(); %orig; }
+- (void)increaseVolume { MiaoVol(); %orig; }
 %end
 
 %ctor {
 	@autoreleasepool {
-		NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"?";
-		MiaoWriteMarker([NSString stringWithFormat:@"ctor %@", bid]);
-		NSLog(@"[Miao] ctor in %@", bid);
-
-		// Path classico: cambio volume di sistema
-		CFNotificationCenterAddObserver(
-			CFNotificationCenterGetLocalCenter(),
-			NULL,
-			MiaoOnSystemVolumeChanged,
-			CFSTR("AVSystemController_SystemVolumeDidChangeNotification"),
-			NULL,
-			CFNotificationSuspensionBehaviorDeliverImmediately
-		);
-
+		MiaoMarker([NSString stringWithFormat:@"ctor %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
 		[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
 														  object:nil
-														   queue:[NSOperationQueue mainQueue]
-													  usingBlock:^(__unused NSNotification *note) {
-			MiaoOnVolumePulse();
-		}];
-
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			MiaoBootBanner();
+														   queue:NSOperationQueue.mainQueue
+													  usingBlock:^(__unused NSNotification *n) { MiaoVol(); }];
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			MiaoBoot();
 		});
-
 		int token = 0;
-		notify_register_dispatch([kNotifyTap UTF8String], &token, dispatch_get_main_queue(), ^(int t) {
-			(void)t;
-			MiaoFireConfiguredTap();
+		notify_register_dispatch(kNotifyTap.UTF8String, &token, dispatch_get_main_queue(), ^(__unused int t) {
+			MiaoFireTap();
 		});
 	}
 }
