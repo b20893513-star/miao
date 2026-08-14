@@ -134,13 +134,31 @@ static void MiaoBootBanner(void) {
 %end
 
 %hook SBVolumeControl
-- (void)decreaseVolume { MiaoOnVolumePulse(); %orig; }
-- (void)increaseVolume { MiaoOnVolumePulse(); %orig; }
+
+- (void)decreaseVolume {
+	MiaoOnVolumePulse();
+	%orig;
+}
+
+- (void)increaseVolume {
+	MiaoOnVolumePulse();
+	%orig;
+}
+
 %end
 
 %hook SBMediaController
-- (void)decreaseVolume { MiaoOnVolumePulse(); %orig; }
-- (void)increaseVolume { MiaoOnVolumePulse(); %orig; }
+
+- (void)decreaseVolume {
+	MiaoOnVolumePulse();
+	%orig;
+}
+
+- (void)increaseVolume {
+	MiaoOnVolumePulse();
+	%orig;
+}
+
 %end
 
 %ctor {
