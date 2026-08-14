@@ -11,9 +11,10 @@ static BOOL gBootDone = NO;
 static BOOL gSessionBusy = NO;
 
 static NSString *const kMiaoPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
-static NSString *const kMiaoDefaultURL = @"https://noxreel.uk/";
+static NSString *const kMiaoDefaultHome = @"https://noxreel.uk/";
 static CFStringRef const kNotifyTap = CFSTR("com.noxlab.miao.tapcenter");
 static CFStringRef const kNotifyCloseTabs = CFSTR("com.noxlab.miao.closetabs");
+static NSMutableSet<NSString *> *gVisitedVideos = nil;
 
 #pragma mark - Utils
 
@@ -68,17 +69,29 @@ static NSDictionary *MiaoPrefs(void) {
 	return p ?: @{};
 }
 
-static NSString *MiaoSessionURL(void) {
-	NSString *u = MiaoPrefs()[@"SessionURL"];
+static NSString *MiaoHomeURL(void) {
+	NSString *u = MiaoPrefs()[@"HomeURL"];
 	if ([u isKindOfClass:[NSString class]] && u.length > 4) return u;
-	return kMiaoDefaultURL;
+	// SessionURL solo se e' la home (senza /video/)
+	NSString *s = MiaoPrefs()[@"SessionURL"];
+	if ([s isKindOfClass:[NSString class]] && s.length > 4 && ![s containsString:@"/video/"]) return s;
+	return kMiaoDefaultHome;
+}
+
+static NSString *MiaoForcedVideoURL(void) {
+	NSString *s = MiaoPrefs()[@"SessionURL"];
+	if ([s isKindOfClass:[NSString class]] && [s containsString:@"/video/"]) return s;
+	NSString *v = MiaoPrefs()[@"VideoURL"];
+	if ([v isKindOfClass:[NSString class]] && [v containsString:@"/video/"]) return v;
+	return nil;
 }
 
 static NSTimeInterval MiaoWaitSeconds(void) {
 	id v = MiaoPrefs()[@"WaitSeconds"];
-	double s = v ? [v doubleValue] : 12.0;
-	if (s < 5.0) s = 5.0;
-	if (s > 120.0) s = 120.0;
+	// Default 18: preroll VAST/html + ~10s content (view progress sito)
+	double s = v ? [v doubleValue] : 18.0;
+	if (s < 8.0) s = 8.0;
+	if (s > 180.0) s = 180.0;
 	return s;
 }
 
@@ -169,8 +182,9 @@ static NSArray<UIWindow *> *MiaoAllWindows(void) {
 static CGPoint MiaoTapPoint(void) {
 	NSDictionary *prefs = MiaoPrefs();
 	CGRect b = UIScreen.mainScreen.bounds;
+	// Su pagina /video/: header + slot abovePlayer + meta' player aspect-video
 	CGFloat x = prefs[@"TapX"] ? [prefs[@"TapX"] doubleValue] : CGRectGetMidX(b);
-	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : (CGRectGetMidY(b) + 40.0);
+	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : (b.size.width * 9.0 / 16.0 * 0.45 + 120.0);
 	return CGPointMake(x, y);
 }
 
@@ -286,26 +300,124 @@ static void MiaoPost(CFStringRef name) {
 	CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), name, NULL, NULL, true);
 }
 
+static NSArray<NSString *> *MiaoParseVideoPaths(NSString *html) {
+	if (html.length == 0) return @[];
+	NSMutableOrderedSet *set = [NSMutableOrderedSet orderedSet];
+	NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"/video/([a-z0-9\\-]+)"
+																		 options:NSRegularExpressionCaseInsensitive
+																		   error:nil];
+	NSArray *matches = [re matchesInString:html options:0 range:NSMakeRange(0, html.length)];
+	for (NSTextCheckingResult *m in matches) {
+		if (m.numberOfRanges < 2) continue;
+		NSString *slug = [html substringWithRange:[m rangeAtIndex:1]];
+		if (slug.length < 2) continue;
+		[set addObject:[NSString stringWithFormat:@"/video/%@", slug.lowercaseString]];
+	}
+	return set.array;
+}
+
+static NSArray<NSString *> *MiaoFallbackVideoPaths(void) {
+	return @[
+		@"/video/sessione-hardcore-di-notte",
+		@"/video/clip-amateur-allo-specchio",
+		@"/video/mattina-soft-lesbo",
+		@"/video/upload-grezzo-dal-telefono",
+		@"/video/weekend-hardcore",
+		@"/video/divertimento-amateur-del-weekend",
+	];
+}
+
+static NSString *MiaoAbsoluteVideoURL(NSString *pathOrURL) {
+	if ([pathOrURL hasPrefix:@"http"]) return pathOrURL;
+	NSURL *base = [NSURL URLWithString:MiaoHomeURL()];
+	NSURL *abs = [NSURL URLWithString:pathOrURL relativeToURL:base];
+	return abs.absoluteString ?: [NSString stringWithFormat:@"https://noxreel.uk%@", pathOrURL];
+}
+
+static NSString *MiaoPickFromPaths(NSArray<NSString *> *paths) {
+	if (!gVisitedVideos) gVisitedVideos = [NSMutableSet set];
+	NSMutableArray *fresh = [NSMutableArray array];
+	for (NSString *p in paths) {
+		if (![gVisitedVideos containsObject:p]) [fresh addObject:p];
+	}
+	NSArray *pool = fresh.count ? fresh : paths;
+	if (pool.count == 0) return nil;
+	NSString *pick = pool[arc4random_uniform((uint32_t)pool.count)];
+	[gVisitedVideos addObject:pick];
+	return MiaoAbsoluteVideoURL(pick);
+}
+
+/// Flusso sito mobile: home ha solo card Link /video/{slug} — non parte nulla al tap centro home.
+/// Come human-auto-session: scegli un /video/ e aprilo.
+static void MiaoResolveVideoURL(void (^cb)(NSString *url)) {
+	NSString *forced = MiaoForcedVideoURL();
+	if (forced.length) {
+		cb(forced);
+		return;
+	}
+
+	NSString *home = MiaoHomeURL();
+	MiaoMarker([NSString stringWithFormat:@"fetch home %@", home]);
+	NSURL *url = [NSURL URLWithString:home];
+	if (!url) {
+		cb(MiaoPickFromPaths(MiaoFallbackVideoPaths()));
+		return;
+	}
+
+	NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+	req.HTTPMethod = @"GET";
+	req.timeoutInterval = 20;
+	[req setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) AppleWebKit/605.1.15" forHTTPHeaderField:@"User-Agent"];
+	[req setCachePolicy:NSURLRequestReloadIgnoringLocalCacheData];
+
+	NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+																 completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+		dispatch_async(dispatch_get_main_queue(), ^{
+			NSArray *paths = nil;
+			if (data && !err) {
+				NSString *html = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+				paths = MiaoParseVideoPaths(html);
+				MiaoMarker([NSString stringWithFormat:@"parsed %lu video links", (unsigned long)paths.count]);
+			} else {
+				MiaoMarker([NSString stringWithFormat:@"fetch fail %@", err.localizedDescription ?: @"?"]);
+			}
+			if (paths.count == 0) paths = MiaoFallbackVideoPaths();
+			NSString *picked = MiaoPickFromPaths(paths);
+			cb(picked ?: MiaoAbsoluteVideoURL(MiaoFallbackVideoPaths().firstObject));
+		});
+	}];
+	[task resume];
+}
+
 static void MiaoRunOneCycle(NSInteger index, NSInteger total, void (^done)(void)) {
-	NSString *url = MiaoSessionURL();
 	NSTimeInterval wait = MiaoWaitSeconds();
+	// loadDelay: SSR + player + eventuale preroll VAST che parte da solo
+	NSTimeInterval loadDelay = 5.0;
 
-	MiaoToast([NSString stringWithFormat:@"Ciclo %ld/%ld\nApro Safari", (long)(index + 1), (long)total]);
-	MiaoMarker([NSString stringWithFormat:@"cycle %ld url=%@", (long)index, url]);
+	MiaoToast([NSString stringWithFormat:@"Ciclo %ld/%ld\nCerco video…", (long)(index + 1), (long)total]);
 
-	MiaoOpenURLString(url);
-
-	// Dopo caricamento: chiedi a Safari un tap soft al centro (play / video)
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoToast(@"Tap centro…");
-		MiaoPost(kNotifyTap);
-	});
-
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((4.0 + wait) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoToast([NSString stringWithFormat:@"Attesi %.0fs — chiudo schede", wait]);
-		MiaoPost(kNotifyCloseTabs);
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+	MiaoResolveVideoURL(^(NSString *videoURL) {
+		if (videoURL.length == 0) {
+			MiaoToast(@"Nessun video");
 			if (done) done();
+			return;
+		}
+		MiaoToast([NSString stringWithFormat:@"Apro video\n%@", videoURL.lastPathComponent]);
+		MiaoMarker([NSString stringWithFormat:@"cycle %ld video=%@", (long)index, videoURL]);
+		MiaoOpenURLString(videoURL);
+
+		// Tap soft sul player (non sulla home): sblocca autoplay iOS se serve
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(loadDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			MiaoToast(@"Tap player…");
+			MiaoPost(kNotifyTap);
+		});
+
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((loadDelay + wait) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			MiaoToast([NSString stringWithFormat:@"Attesi %.0fs - chiudo", wait]);
+			MiaoPost(kNotifyCloseTabs);
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+				if (done) done();
+			});
 		});
 	});
 }
@@ -332,6 +444,8 @@ static void MiaoRunSession(void) {
 	}
 	gSessionBusy = YES;
 	NSInteger cycles = MiaoCycles();
+	if (!gVisitedVideos) gVisitedVideos = [NSMutableSet set];
+	[gVisitedVideos removeAllObjects];
 	MiaoToast(@"Sessione Miao…");
 	MiaoMarker(@"session start");
 	MiaoSessionStep(0, cycles);

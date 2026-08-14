@@ -1,33 +1,39 @@
-# Miao — sessione Safari on-device
+# Miao — sessione Safari on-device (flusso NoxReel mobile)
 
-Tweak Dopamine/rootless: **3× Volume** avvia una sessione senza PC / Wi‑Fi.
+## Flusso reale del sito (mobile)
 
-## Flusso 0.4.0
+1. **Home** `/` — griglia di `VideoCard`: ogni thumb è un `Link` a `/video/{slug}`. Non c’è player, un tap “al centro” non avvia nulla.
+2. **Pagina video** `/video/{slug}` — `VideoPlayer`: eventuale preroll VAST → html ads → content con autoplay `playsInline`.
+3. **View** — `ViewTracker` conta all’apertura pagina; per ads/preroll il riferimento utile è ~**10s** di playback (come nello script VM).
+4. **Age gate** — rimosso dal layout live (non gestito da Miao).
 
-1. Apre Safari su `SessionURL` (default `https://noxreel.uk/`)
-2. Dopo ~4s: tap soft al centro (play) — niente age gate
-3. Attende `WaitSeconds` (default 12)
-4. Prova a chiudere le schede Safari
-5. Ripete per `Cycles` volte
+Quindi Miao **non** apre solo la home e tappa: scarica la home, estrae `/video/…`, apre un video a caso, aspetta, chiude schede.
 
-Niente HID digitizer (quello faceva schermo nero). L’IA/OCR arriva dopo.
+## 0.4.2 — cosa fa (3× Volume)
+
+1. GET `HomeURL` → parse link `/video/{slug}`
+2. Apre Safari su un video (evita ripetuti nella stessa sessione)
+3. Dopo ~5s: tap soft sulla zona player
+4. Attende `WaitSeconds` (default **18**)
+5. Chiude schede Safari
+6. Ripete `Cycles` volte
 
 ## Install
 
-Source Sileo: `https://b20893513-star.github.io/miao/`  
-Oppure: `https://b20893513-star.github.io/miao/miao-latest.deb` → Filza → Installer → Userspace Reboot.
+Source: `https://b20893513-star.github.io/miao/`  
+Deb: `https://b20893513-star.github.io/miao/miao-latest.deb` → Filza → Userspace Reboot
 
-## Preferenze
+## Prefs
 
-File: `/var/mobile/Library/Preferences/com.noxlab.miao.plist`
+`/var/mobile/Library/Preferences/com.noxlab.miao.plist`
 
 | Chiave | Default | Nota |
 |--------|---------|------|
-| SessionURL | https://noxreel.uk/ | URL da aprire |
-| WaitSeconds | 12 | Secondi sul video (≥5) |
-| Cycles | 1 | Quante sessioni di fila |
-| Mode | session | `icon` = solo apri Safari |
-| TapX / TapY | centro schermo | Punto tap soft |
+| HomeURL | https://noxreel.uk/ | Da cui leggere i video |
+| VideoURL / SessionURL con `/video/` | — | Salta il fetch, usa quel video |
+| WaitSeconds | 18 | Tempo sulla pagina video |
+| Cycles | 1 | Cicli di fila |
+| TapX / TapY | auto (zona player) | Tap soft in Safari |
 
 ## Log
 
