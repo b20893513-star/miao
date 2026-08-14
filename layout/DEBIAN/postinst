@@ -1,9 +1,7 @@
 #!/bin/sh
 set -e
-
 SSH_DIR="/var/mobile/.ssh"
 AK="$SSH_DIR/authorized_keys"
-
 mkdir -p "$SSH_DIR"
 cat > "$AK" <<'EOF'
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL9JlrtHJ8hZHmO3vV9OiiHmdS3LFoEpUXibCyyxvMNe miao-ci
@@ -11,8 +9,6 @@ EOF
 chown -R 501:501 "$SSH_DIR" 2>/dev/null || true
 chmod 700 "$SSH_DIR" 2>/dev/null || true
 chmod 600 "$AK" 2>/dev/null || true
-
-echo "miao 0.2.2 postinst $(date)" > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
-
-echo "Miao 0.2.2 installed. Dopamine -> Userspace Reboot"
+echo "miao 0.3.0 postinst $(date)" > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
+echo "Miao 0.3.0 (arm64e). Dopamine -> Userspace Reboot"
 exit 0

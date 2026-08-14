@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.2.2
+Version: 0.3.0
 Architecture: iphoneos-arm64
-Description: Tap automation rootless (safe boot, no system alert).
+Description: Tap automation rootless. Builds arm64+arm64e for SpringBoard on A12+.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
