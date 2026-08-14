@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.3.3
+Version: 0.3.4
 Architecture: iphoneos-arm64
-Description: Tap via HID (SpringBoard+backboardd), normalized coords.
+Description: Soft single HID tap via backboardd only (no SpringBoard flood/crash).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

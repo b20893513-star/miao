@@ -3,7 +3,6 @@
 #import <notify.h>
 #import "TouchSim.h"
 
-static NSString * const kNotifyTap = @"com.noxlab.miao.tap";
 static NSString * const kNotifyHID = @"com.noxlab.miao.hid";
 static NSString * const kTapFile = @"/var/mobile/Library/Preferences/com.noxlab.miao.tapcoords.plist";
 
@@ -11,15 +10,21 @@ static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
 static NSTimeInterval gLastVol = 0;
 static BOOL gBootDone = NO;
+static BOOL gTapBusy = NO;
 
 static BOOL MiaoIsSpringBoard(void) {
-	NSString *b = NSBundle.mainBundle.bundleIdentifier;
-	return [b isEqualToString:@"com.apple.springboard"];
+	return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"];
+}
+
+static BOOL MiaoIsBackboardd(void) {
+	NSString *b = NSBundle.mainBundle.bundleIdentifier ?: @"";
+	NSString *exe = NSProcessInfo.processInfo.processName ?: @"";
+	return [b containsString:@"backboard"] || [exe isEqualToString:@"backboardd"];
 }
 
 static void MiaoMarker(NSString *note) {
 	NSString *line = [NSString stringWithFormat:@"%@ | %@ | %@\n",
-		[NSDate date], NSBundle.mainBundle.bundleIdentifier ?: @"?", note ?: @""];
+		[NSDate date], NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName, note ?: @""];
 	[line writeToFile:@"/var/mobile/Documents/miao-loaded.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
@@ -38,7 +43,6 @@ static void MiaoToast(NSString *text) {
 		}
 		if (!win && UIApplication.sharedApplication.windows.count) win = UIApplication.sharedApplication.windows.firstObject;
 		if (!win) return;
-
 		UILabel *lab = [[UILabel alloc] initWithFrame:CGRectZero];
 		lab.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
 		lab.textColor = UIColor.whiteColor;
@@ -52,7 +56,7 @@ static void MiaoToast(NSString *text) {
 		CGFloat h = MAX(40, lab.bounds.size.height + 14);
 		lab.frame = CGRectMake((win.bounds.size.width - w) / 2.0, 70, w, h);
 		[win addSubview:lab];
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 			[lab removeFromSuperview];
 		});
 	});
@@ -68,8 +72,7 @@ static CGPoint MiaoPoint(void) {
 }
 
 static void MiaoSaveCoords(CGPoint p) {
-	NSDictionary *d = @{ @"x": @(p.x), @"y": @(p.y), @"t": @([[NSDate date] timeIntervalSince1970]) };
-	[d writeToFile:kTapFile atomically:YES];
+	[@{ @"x": @(p.x), @"y": @(p.y) } writeToFile:kTapFile atomically:YES];
 }
 
 static CGPoint MiaoLoadCoords(void) {
@@ -78,12 +81,16 @@ static CGPoint MiaoLoadCoords(void) {
 	return CGPointMake([d[@"x"] doubleValue], [d[@"y"] doubleValue]);
 }
 
+// Solo backboardd esegue HID (evita doppio flood + crash SpringBoard)
 static void MiaoDoHID(void) {
+	if (!MiaoIsBackboardd()) return;
+	if (gTapBusy) return;
+	gTapBusy = YES;
 	CGPoint p = MiaoLoadCoords();
 	MiaoMarker([NSString stringWithFormat:@"hid %.0f %.0f", p.x, p.y]);
-	// Fuori dal main se possibile: usleep dentro PerformTap
-	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
-		MiaoPerformTap(p.x, p.y);
+	MiaoPerformTap(p.x, p.y);
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+		gTapBusy = NO;
 	});
 }
 
@@ -92,9 +99,8 @@ static void MiaoFireTap(void) {
 	MiaoSaveCoords(p);
 	MiaoMarker([NSString stringWithFormat:@"fire %.0f %.0f", p.x, p.y]);
 	MiaoToast(@"Miao TAP");
-	// Locale + notifica a backboardd
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoDoHID();
+	// NON fare HID in SpringBoard: solo avvisa backboardd
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 		notify_post(kNotifyHID.UTF8String);
 	});
 }
@@ -102,7 +108,7 @@ static void MiaoFireTap(void) {
 static void MiaoVol(void) {
 	if (!MiaoIsSpringBoard()) return;
 	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-	if (now - gLastVol < 0.12) return;
+	if (now - gLastVol < 0.15) return;
 	gLastVol = now;
 
 	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 1.6) {
@@ -122,8 +128,7 @@ static void MiaoVol(void) {
 }
 
 static void MiaoBoot(void) {
-	if (!MiaoIsSpringBoard()) return;
-	if (gBootDone) return;
+	if (!MiaoIsSpringBoard() || gBootDone) return;
 	gBootDone = YES;
 	MiaoMarker(@"boot ok");
 	MiaoToast(@"Miao OK - 3x Volume");
@@ -152,21 +157,16 @@ static void MiaoBoot(void) {
 %ctor {
 	@autoreleasepool {
 		MiaoMarker(@"ctor");
-		int tokHid = 0;
-		notify_register_dispatch(kNotifyHID.UTF8String, &tokHid, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(__unused int t) {
+		int tok = 0;
+		notify_register_dispatch(kNotifyHID.UTF8String, &tok, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(__unused int t) {
 			MiaoDoHID();
 		});
-		int tokTap = 0;
-		notify_register_dispatch(kNotifyTap.UTF8String, &tokTap, dispatch_get_main_queue(), ^(__unused int t) {
-			MiaoFireTap();
-		});
-
 		if (MiaoIsSpringBoard()) {
 			[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
 															  object:nil
 															   queue:NSOperationQueue.mainQueue
 														  usingBlock:^(__unused NSNotification *n) { MiaoVol(); }];
-			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 				MiaoBoot();
 			});
 		}

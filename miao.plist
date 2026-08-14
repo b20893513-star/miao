@@ -4,10 +4,6 @@
 			"com.apple.springboard",
 			"com.apple.backboardd"
 		);
-		Executables = (
-			"SpringBoard",
-			"backboardd"
-		);
 		Mode = "Any";
 	};
 }
