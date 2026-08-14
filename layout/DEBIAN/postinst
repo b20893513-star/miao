@@ -17,11 +17,11 @@ chmod 700 "$SSH_DIR" 2>/dev/null || true
 chmod 600 "$AK" 2>/dev/null || true
 
 # marker install
-echo "miao 0.2.0 installed $(date)" > /var/mobile/Documents/miao-loaded.txt 2>/dev/null || true
+echo "miao 0.2.1 installed $(date)" > /var/mobile/Documents/miao-loaded.txt 2>/dev/null || true
 chown 501:501 /var/mobile/Documents/miao-loaded.txt 2>/dev/null || true
 
 echo ""
-echo "=== Miao 0.2.0 OK ==="
+echo "=== Miao 0.2.1 OK ==="
 echo "1) Dopamine -> Userspace Reboot"
 echo "2) Toast/alert Miao + 3x Volume"
 echo "3) SSH key in /var/mobile/.ssh/authorized_keys"

@@ -1,9 +1,9 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.2.0
+Version: 0.2.1
 Architecture: iphoneos-arm64
-Description: Tap automation + setup SSH key (pulito). Reinstalla da Sileo dopo wipe.
-Maintainer: noxlab <noxlab@local>
+Description: Tap automation rootless for Dopamine. Includes SSH key setup.
+Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
 Depends: firmware (>= 15.0)

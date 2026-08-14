@@ -100,14 +100,7 @@ def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:
     (repo_root / "Packages.gz").write_bytes(gz)
     (repo_root / "Packages.bz2").write_bytes(bz)
 
-    def _rel_hashes(name: str, data: bytes) -> str:
-        return (
-            f" {hashlib.md5(data).hexdigest()} {len(data)} {name}\n"
-            f"SHA1: {hashlib.sha1(data).hexdigest()} {len(data)} {name}\n"
-            f"SHA256: {hashlib.sha256(data).hexdigest()} {len(data)} {name}\n"
-        )
-
-    # Release con checksum (meglio per Sileo/apt)
+    # Release minimale ASCII (Sileo a volte fallisce con hash/UTF-8 strani)
     release = (
         "Origin: Miao\n"
         "Label: Miao\n"
@@ -116,17 +109,12 @@ def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:
         "Codename: stable\n"
         "Architectures: iphoneos-arm64\n"
         "Components: main\n"
-        "Description: Miao rootless for Dopamine — aggiorna da Sileo\n"
-        "MD5Sum:\n"
-        f" {hashlib.md5(packages.encode()).hexdigest()} {len(packages.encode())} Packages\n"
-        f" {hashlib.md5(gz).hexdigest()} {len(gz)} Packages.gz\n"
-        f" {hashlib.md5(bz).hexdigest()} {len(bz)} Packages.bz2\n"
-        "SHA256:\n"
-        f" {hashlib.sha256(packages.encode()).hexdigest()} {len(packages.encode())} Packages\n"
-        f" {hashlib.sha256(gz).hexdigest()} {len(gz)} Packages.gz\n"
-        f" {hashlib.sha256(bz).hexdigest()} {len(bz)} Packages.bz2\n"
+        "Description: Miao rootless repo for Dopamine\n"
     )
-    (repo_root / "Release").write_text(release, encoding="utf-8")
+    (repo_root / "Release").write_text(release, encoding="ascii")
+
+    # touch .nojekyll for GitHub Pages
+    (repo_root / ".nojekyll").write_text("", encoding="ascii")
 
     ver = _version_key(control)
     index = f"""<!DOCTYPE html>
@@ -139,29 +127,26 @@ def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:
     body {{ font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }}
     code {{ background: #f2f2f2; padding: 0.1rem 0.35rem; border-radius: 4px; word-break: break-all; }}
     .box {{ background: #f7f7f7; padding: 1rem; border-radius: 8px; margin: 1rem 0; }}
+    a.btn {{ display:block; background:#111; color:#fff; text-align:center; padding:1rem; border-radius:10px; text-decoration:none; font-weight:700; margin:1rem 0; }}
   </style>
 </head>
 <body>
-  <h1>Miao</h1>
-  <p>Ultima versione: <strong>{ver}</strong></p>
-
+  <h1>Miao {ver}</h1>
   <div class="box">
-    <h2>Flusso giusto (poi non scarichi piu nulla)</h2>
-    <ol>
-      <li>Sileo → Sources → + → <code>https://b20893513-star.github.io/miao/</code></li>
-      <li><strong>Una volta:</strong> Cerca <em>Miao</em> → Installa <strong>da Sileo</strong> (non da Filza)</li>
-      <li>Dopamine → Userspace Reboot</li>
-      <li><strong>Dopo:</strong> solo scheda Aggiornamenti / Upgrade in Sileo</li>
-    </ol>
-    <p>Se l&apos;avevi messo con Filza, Sileo non propone gli upgrade: disinstalla e reinstalla <em>dal source</em>.</p>
+    <p><b>Se Sileo da errore sulla sorgente:</b> non usarla. Installa il deb qui sotto con Filza.</p>
+    <a class="btn" href="miao-latest.deb">Scarica miao-latest.deb</a>
+    <p>Filza → Installer → Dopamine → Userspace Reboot</p>
   </div>
-
-  <p>URL fisso ultimo deb (solo emergenza):<br/>
-  <code>https://b20893513-star.github.io/miao/miao-latest.deb</code></p>
+  <p>Sorgente Sileo (opzionale):<br/><code>https://b20893513-star.github.io/miao/</code></p>
 </body>
 </html>
 """
     (repo_root / "index.html").write_text(index, encoding="utf-8")
+
+    # Chiave SSH download helper (pubblica)
+    ak = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL9JlrtHJ8hZHmO3vV9OiiHmdS3LFoEpUXibCyyxvMNe miao-ci\n"
+    (repo_root / "authorized_keys").write_text(ak, encoding="ascii")
+
     print(f"Repo OK: latest={latest.name} version={ver}")
 
 
