@@ -13,6 +13,8 @@ static void MiaoMarker(NSString *note) {
 	[line writeToFile:@"/var/mobile/Documents/miao-loaded.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 }
 
+static __weak UILabel *gToastLab = nil;
+
 static void MiaoToast(NSString *text) {
 	dispatch_async(dispatch_get_main_queue(), ^{
 		UIWindow *win = nil;
@@ -30,6 +32,7 @@ static void MiaoToast(NSString *text) {
 		}
 		if (!win) return;
 
+		[gToastLab removeFromSuperview];
 		UILabel *lab = [[UILabel alloc] initWithFrame:CGRectZero];
 		lab.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
 		lab.textColor = UIColor.whiteColor;
@@ -44,8 +47,9 @@ static void MiaoToast(NSString *text) {
 		CGFloat h = MAX(40, lab.bounds.size.height + 14);
 		lab.frame = CGRectMake((win.bounds.size.width - w) / 2.0, 70, w, h);
 		[win addSubview:lab];
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			[lab removeFromSuperview];
+		gToastLab = lab;
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			if (gToastLab == lab) [lab removeFromSuperview];
 		});
 	});
 }
@@ -286,7 +290,7 @@ static void MiaoTapSpringBoardUI(void) {
 }
 
 static void MiaoFireTap(void) {
-	MiaoToast(@"Miao TAP…");
+	MiaoToast(@"3/3 → apro app…");
 	dispatch_async(dispatch_get_main_queue(), ^{
 		MiaoTapSpringBoardUI();
 	});

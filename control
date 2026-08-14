@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.3.7
+Version: 0.3.8
 Architecture: iphoneos-arm64
-Description: Open Home icons via bundle ID / LSApplicationWorkspace.
+Description: Open Home icons via bundle ID. Fixed double volume counting.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
