@@ -265,10 +265,11 @@ static void MiaoTapSpringBoardUI(void) {
 
 	if (bid.length && MiaoOpenBundleID(bid)) {
 		MiaoToast([NSString stringWithFormat:@"Apro %@", name]);
+		MiaoMarker([NSString stringWithFormat:@"opened %@", bid]);
 		return;
 	}
 	if (MiaoLaunchViaIconController(icon, chosen)) {
-		MiaoToast([NSString stringWithFormat:@"Launch %@", name]);
+		MiaoToast([NSString stringWithFormat:@"Apro %@", name]);
 		return;
 	}
 
@@ -293,9 +294,10 @@ static void MiaoFireTap(void) {
 
 static void MiaoVol(void) {
 	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-	if (now - gLastVol < 0.15) return;
+	// Un solo impulso ogni 0.45s: altrimenti hook+notifica = 2 conti per 1 click fisico
+	if (now - gLastVol < 0.45) return;
 	gLastVol = now;
-	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 1.6) {
+	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 2.0) {
 		gVolWindowStart = now;
 		gVolCount = 1;
 		MiaoToast(@"Miao 1/3");
