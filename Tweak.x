@@ -2,7 +2,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <notify.h>
+#import <CoreFoundation/CoreFoundation.h>
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
@@ -12,8 +12,8 @@ static BOOL gSessionBusy = NO;
 
 static NSString *const kMiaoPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
 static NSString *const kMiaoDefaultURL = @"https://noxreel.uk/";
-static NSString *const kNotifyTap = "com.noxlab.miao.tapcenter";
-static NSString *const kNotifyCloseTabs = "com.noxlab.miao.closetabs";
+static CFStringRef const kNotifyTap = CFSTR("com.noxlab.miao.tapcenter");
+static CFStringRef const kNotifyCloseTabs = CFSTR("com.noxlab.miao.closetabs");
 
 #pragma mark - Utils
 
@@ -282,8 +282,8 @@ static BOOL MiaoSafariCloseAllTabs(void) {
 
 #pragma mark - Session (SpringBoard)
 
-static void MiaoPost(const char *name) {
-	notify_post(name);
+static void MiaoPost(CFStringRef name) {
+	CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), name, NULL, NULL, true);
 }
 
 static void MiaoRunOneCycle(NSInteger index, NSInteger total, void (^done)(void)) {
@@ -380,7 +380,7 @@ static void MiaoBoot(void) {
 	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"?";
 	MiaoMarker([NSString stringWithFormat:@"boot ok %@", bid]);
 	if (MiaoIsSpringBoard()) {
-		MiaoToast(@"Miao 0.4 — 3x Vol = sessione");
+		MiaoToast(@"Miao 0.4 - 3x Vol = sessione");
 	}
 }
 

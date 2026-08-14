@@ -10,6 +10,5 @@ TWEAK_NAME = Miao
 Miao_FILES = Tweak.x
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation
-Miao_LIBRARIES = notify
 
 include $(THEOS_MAKE_PATH)/tweak.mk

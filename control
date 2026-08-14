@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.4.0
+Version: 0.4.1
 Architecture: iphoneos-arm64
-Description: Sessione Safari on-device: apri URL noxreel, wait, tap soft, chiudi schede.
+Description: Sessione Safari on-device (fix link notify).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
