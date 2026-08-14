@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <CoreFoundation/CFUserNotification.h>
 #import <notify.h>
 #import "TouchSim.h"
 
@@ -7,7 +8,8 @@ static NSString * const kNotifyTap = @"com.noxlab.miao.tap";
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
 static UILabel *gToastLabel = nil;
-static BOOL gDidBootToast = NO;
+static BOOL gDidBootBanner = NO;
+static NSTimeInterval gLastVolNotif = 0;
 
 static void MiaoWriteMarker(NSString *note) {
 	NSString *msg = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], note ?: @""];
@@ -99,13 +101,19 @@ static void MiaoFireConfiguredTap(void) {
 
 static void MiaoOnVolumePulse(void) {
 	NSTimeInterval now = [NSDate date].timeIntervalSince1970;
-	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 1.4) {
+	// Debounce notifiche volume doppie
+	if (now - gLastVolNotif < 0.08) return;
+	gLastVolNotif = now;
+
+	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 1.5) {
 		gVolWindowStart = now;
 		gVolCount = 1;
+		MiaoWriteMarker(@"vol 1");
 		MiaoToast(@"Miao 1/3");
 		return;
 	}
 	gVolCount += 1;
+	MiaoWriteMarker([NSString stringWithFormat:@"vol %ld", (long)gVolCount]);
 	if (gVolCount < 3) {
 		MiaoToast([NSString stringWithFormat:@"Miao %ld/3", (long)gVolCount]);
 		return;
@@ -116,17 +124,40 @@ static void MiaoOnVolumePulse(void) {
 }
 
 static void MiaoBootBanner(void) {
-	if (gDidBootToast) return;
-	gDidBootToast = YES;
+	if (gDidBootBanner) return;
+	gDidBootBanner = YES;
 	MiaoWriteMarker(@"boot-banner");
 	MiaoToast(@"Miao attivo — 3x Volume");
+
+	// Alert di sistema: si vede anche se il toast fallisce
+	dispatch_async(dispatch_get_main_queue(), ^{
+		CFOptionFlags flags = 0;
+		CFUserNotificationDisplayAlert(
+			5.0,
+			0,
+			NULL,
+			NULL,
+			NULL,
+			CFSTR("Miao"),
+			CFSTR("Tweak caricato.\nPremi 3 volte Volume (su o giu) per un tap di prova."),
+			CFSTR("OK"),
+			NULL,
+			NULL,
+			&flags
+		);
+	});
+}
+
+static void MiaoOnSystemVolumeChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+	(void)center; (void)observer; (void)name; (void)object; (void)userInfo;
+	MiaoOnVolumePulse();
 }
 
 %hook SpringBoard
 
 - (void)applicationDidFinishLaunching:(id)application {
 	%orig;
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 		MiaoBootBanner();
 	});
 }
@@ -162,14 +193,36 @@ static void MiaoBootBanner(void) {
 %end
 
 %ctor {
-	MiaoWriteMarker([NSString stringWithFormat:@"ctor %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	NSLog(@"[Miao] ctor in %@", NSBundle.mainBundle.bundleIdentifier ?: @"?");
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoBootBanner();
-	});
-	int token = 0;
-	notify_register_dispatch([kNotifyTap UTF8String], &token, dispatch_get_main_queue(), ^(int t) {
-		(void)t;
-		MiaoFireConfiguredTap();
-	});
+	@autoreleasepool {
+		NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"?";
+		MiaoWriteMarker([NSString stringWithFormat:@"ctor %@", bid]);
+		NSLog(@"[Miao] ctor in %@", bid);
+
+		// Path classico: cambio volume di sistema
+		CFNotificationCenterAddObserver(
+			CFNotificationCenterGetLocalCenter(),
+			NULL,
+			MiaoOnSystemVolumeChanged,
+			CFSTR("AVSystemController_SystemVolumeDidChangeNotification"),
+			NULL,
+			CFNotificationSuspensionBehaviorDeliverImmediately
+		);
+
+		[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
+														  object:nil
+														   queue:[NSOperationQueue mainQueue]
+													  usingBlock:^(__unused NSNotification *note) {
+			MiaoOnVolumePulse();
+		}];
+
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			MiaoBootBanner();
+		});
+
+		int token = 0;
+		notify_register_dispatch([kNotifyTap UTF8String], &token, dispatch_get_main_queue(), ^(int t) {
+			(void)t;
+			MiaoFireConfiguredTap();
+		});
+	}
 }
