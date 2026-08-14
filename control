@@ -1,9 +1,9 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.1.1
+Version: 0.1.2
 Architecture: iphoneos-arm64
-Description: Tap automation rootless per Dopamine (v0.1.1: toast + trigger volume piu robusto).
+Description: Tap automation rootless Dopamine — marker file + toast boot piu affidabile.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
-Depends: firmware (>= 15.0), mobilesubstrate | ellekit
+Depends: firmware (>= 15.0), ellekit | mobilesubstrate
