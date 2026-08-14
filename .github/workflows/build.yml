@@ -10,7 +10,6 @@ jobs:
     runs-on: macos-14
     env:
       THEOS: ${{ github.workspace }}/theos
-      # Evita fallimenti brew su runner con tap non trusted (aws/tap, ecc.)
       HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
@@ -22,21 +21,23 @@ jobs:
       - name: Install build tools
         run: |
           brew untap aws/tap 2>/dev/null || true
-          brew install ldid make || brew install ldid
-          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH" || true
+          brew install ldid make
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "MAKE=$(brew --prefix make)/libexec/gnubin/make" >> "$GITHUB_ENV"
 
       - name: Cache Theos
         uses: actions/cache@v4
         with:
           path: ${{ env.THEOS }}
-          key: theos-${{ runner.os }}-v1
+          key: theos-${{ runner.os }}-v2
 
       - name: Install Theos
         run: |
           if [ ! -d "$THEOS/.git" ]; then
-            git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
+            git clone --recursive https://github.com/theos/theos.git "$THEOS"
           else
             echo "Theos cache hit"
+            git -C "$THEOS" submodule update --init --recursive || true
           fi
 
       - name: Install iPhoneOS16.5 SDK
@@ -52,11 +53,21 @@ jobs:
 
       - name: Build rootless package
         run: |
-          export PATH="$(brew --prefix make)/libexec/gnubin:$PATH"
-          which make
-          make --version | head -n 1
-          make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          GMAKE="$(brew --prefix make)/libexec/gnubin/make"
+          echo "Using make: $GMAKE"
+          "$GMAKE" --version | head -n 2
+          # Mostra errori completi
+          set -o pipefail
+          "$GMAKE" clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless 2>&1 | tee build.log
           ls -la packages/
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: miao-build-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Upload .deb
         uses: actions/upload-artifact@v4

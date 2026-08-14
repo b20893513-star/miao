@@ -1,92 +1,54 @@
 #import "TouchSim.h"
 #import <UIKit/UIKit.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
 #import <unistd.h>
 
-// Tipi IOKit (privati) — pattern pubblici stile SimulateTouch / HID helpers.
-// Non è reverse di XXTouch Elite.
-
-#ifndef IOHIDFloat
 typedef float IOHIDFloat;
-#endif
-#ifndef boolean_t
 typedef int boolean_t;
-#endif
-#ifndef IOOptionBits
 typedef uint32_t IOOptionBits;
-#endif
-
 typedef struct __IOHIDEvent *IOHIDEventRef;
 typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
 
-enum {
-	kIOHIDEventTypeDigitizer = 11,
-};
-
-enum {
-	kIOHIDDigitizerTransducerTypeFinger = 0,
-	kIOHIDDigitizerTransducerTypeHand = 3,
-};
-
+enum { kIOHIDEventTypeDigitizer = 11 };
+enum { kIOHIDDigitizerTransducerTypeHand = 3 };
 enum {
 	kIOHIDDigitizerEventRange = 1 << 0,
 	kIOHIDDigitizerEventTouch = 1 << 1,
 	kIOHIDDigitizerEventPosition = 1 << 2,
 };
-
 enum {
 	kIOHIDEventFieldDigitizerMajorRadius = (kIOHIDEventTypeDigitizer << 16) | 0x0B,
 	kIOHIDEventFieldDigitizerMinorRadius = (kIOHIDEventTypeDigitizer << 16) | 0x0C,
 };
 
-typedef uint32_t IOHIDEventType;
-typedef uint32_t IOHIDDigitizerTransducerType;
-typedef uint32_t IOHIDDigitizerEventMask;
-typedef uint32_t IOHIDEventField;
-
-static IOHIDEventRef (*p_IOHIDEventCreateDigitizerEvent)(
-	CFAllocatorRef, uint64_t, IOHIDDigitizerTransducerType, uint32_t, uint32_t,
-	IOHIDDigitizerEventMask, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat,
-	IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits) = NULL;
-
-static IOHIDEventRef (*p_IOHIDEventCreateDigitizerFingerEvent)(
-	CFAllocatorRef, uint64_t, uint32_t, uint32_t, IOHIDDigitizerEventMask,
-	IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat,
-	boolean_t, boolean_t, IOOptionBits) = NULL;
-
-static void (*p_IOHIDEventAppendEvent)(IOHIDEventRef, IOHIDEventRef, IOOptionBits) = NULL;
-static void (*p_IOHIDEventSetFloatValue)(IOHIDEventRef, IOHIDEventField, IOHIDFloat) = NULL;
-static void (*p_IOHIDEventSetSenderID)(IOHIDEventRef, uint64_t) = NULL;
-static IOHIDEventSystemClientRef (*p_IOHIDEventSystemClientCreate)(CFAllocatorRef) = NULL;
-static void (*p_IOHIDEventSystemClientDispatchEvent)(IOHIDEventSystemClientRef, IOHIDEventRef) = NULL;
+static IOHIDEventRef (*p_CreateDigitizerEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits);
+static IOHIDEventRef (*p_CreateDigitizerFingerEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits);
+static void (*p_AppendEvent)(IOHIDEventRef, IOHIDEventRef, IOOptionBits);
+static void (*p_SetFloatValue)(IOHIDEventRef, uint32_t, IOHIDFloat);
+static void (*p_SetSenderID)(IOHIDEventRef, uint64_t);
+static IOHIDEventSystemClientRef (*p_ClientCreate)(CFAllocatorRef);
+static void (*p_ClientDispatch)(IOHIDEventSystemClientRef, IOHIDEventRef);
 
 static bool MiaoLoadIOHID(void) {
-	static dispatch_once_t once;
+	static dispatch_once_t onceToken;
 	static bool ok = false;
-	dispatch_once(&once, ^{
+	dispatch_once(&onceToken, ^{
 		void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
 		if (!iokit) {
 			NSLog(@"[Miao] dlopen IOKit failed");
 			return;
 		}
-		p_IOHIDEventCreateDigitizerEvent = (typeof(p_IOHIDEventCreateDigitizerEvent))dlsym(iokit, "IOHIDEventCreateDigitizerEvent");
-		p_IOHIDEventCreateDigitizerFingerEvent = (typeof(p_IOHIDEventCreateDigitizerFingerEvent))dlsym(iokit, "IOHIDEventCreateDigitizerFingerEvent");
-		p_IOHIDEventAppendEvent = (typeof(p_IOHIDEventAppendEvent))dlsym(iokit, "IOHIDEventAppendEvent");
-		p_IOHIDEventSetFloatValue = (typeof(p_IOHIDEventSetFloatValue))dlsym(iokit, "IOHIDEventSetFloatValue");
-		p_IOHIDEventSetSenderID = (typeof(p_IOHIDEventSetSenderID))dlsym(iokit, "IOHIDEventSetSenderID");
-		p_IOHIDEventSystemClientCreate = (typeof(p_IOHIDEventSystemClientCreate))dlsym(iokit, "IOHIDEventSystemClientCreate");
-		p_IOHIDEventSystemClientDispatchEvent = (typeof(p_IOHIDEventSystemClientDispatchEvent))dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
-
-		ok = p_IOHIDEventCreateDigitizerEvent
-			&& p_IOHIDEventCreateDigitizerFingerEvent
-			&& p_IOHIDEventAppendEvent
-			&& p_IOHIDEventSystemClientCreate
-			&& p_IOHIDEventSystemClientDispatchEvent;
-
-		if (!ok) {
-			NSLog(@"[Miao] IOHID symbols incomplete");
-		}
+		p_CreateDigitizerEvent = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits))dlsym(iokit, "IOHIDEventCreateDigitizerEvent");
+		p_CreateDigitizerFingerEvent = (IOHIDEventRef (*)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits))dlsym(iokit, "IOHIDEventCreateDigitizerFingerEvent");
+		p_AppendEvent = (void (*)(IOHIDEventRef, IOHIDEventRef, IOOptionBits))dlsym(iokit, "IOHIDEventAppendEvent");
+		p_SetFloatValue = (void (*)(IOHIDEventRef, uint32_t, IOHIDFloat))dlsym(iokit, "IOHIDEventSetFloatValue");
+		p_SetSenderID = (void (*)(IOHIDEventRef, uint64_t))dlsym(iokit, "IOHIDEventSetSenderID");
+		p_ClientCreate = (IOHIDEventSystemClientRef (*)(CFAllocatorRef))dlsym(iokit, "IOHIDEventSystemClientCreate");
+		p_ClientDispatch = (void (*)(IOHIDEventSystemClientRef, IOHIDEventRef))dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
+		ok = p_CreateDigitizerEvent && p_CreateDigitizerFingerEvent && p_AppendEvent && p_ClientCreate && p_ClientDispatch;
+		if (!ok) NSLog(@"[Miao] IOHID symbols incomplete");
 	});
 	return ok;
 }
@@ -101,65 +63,44 @@ static void MiaoDispatchDigitizer(CGFloat x, CGFloat y, BOOL touching) {
 	IOHIDFloat px = (IOHIDFloat)(x * scale);
 	IOHIDFloat py = (IOHIDFloat)(y * scale);
 	uint64_t time = mach_absolute_time();
-	IOHIDDigitizerEventMask mask =
-		(IOHIDDigitizerEventMask)(kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventPosition);
+	uint32_t mask = (uint32_t)(kIOHIDDigitizerEventRange | kIOHIDDigitizerEventTouch | kIOHIDDigitizerEventPosition);
 
-	IOHIDEventRef parent = p_IOHIDEventCreateDigitizerEvent(
-		kCFAllocatorDefault,
-		time,
-		(IOHIDDigitizerTransducerType)kIOHIDDigitizerTransducerTypeHand,
-		0,
-		0,
-		mask,
-		0,
-		0, 0, 0, 0, 0,
-		touching,
-		touching,
-		0
-	);
+	IOHIDEventRef parent = p_CreateDigitizerEvent(
+		kCFAllocatorDefault, time, (uint32_t)kIOHIDDigitizerTransducerTypeHand,
+		0, 0, mask, 0, 0, 0, 0, 0, 0, touching, touching, 0);
 	if (!parent) {
 		NSLog(@"[Miao] CreateDigitizerEvent failed");
 		return;
 	}
 
-	IOHIDEventRef child = p_IOHIDEventCreateDigitizerFingerEvent(
-		kCFAllocatorDefault,
-		time,
-		1,
-		1,
-		mask,
-		px, py,
-		0, 0, 0,
-		touching,
-		touching,
-		0
-	);
+	IOHIDEventRef child = p_CreateDigitizerFingerEvent(
+		kCFAllocatorDefault, time, 1, 1, mask, px, py, 0, 0, 0, touching, touching, 0);
 	if (!child) {
 		CFRelease(parent);
 		NSLog(@"[Miao] CreateDigitizerFingerEvent failed");
 		return;
 	}
 
-	if (p_IOHIDEventSetFloatValue) {
-		p_IOHIDEventSetFloatValue(child, (IOHIDEventField)kIOHIDEventFieldDigitizerMajorRadius, 5.0f);
-		p_IOHIDEventSetFloatValue(child, (IOHIDEventField)kIOHIDEventFieldDigitizerMinorRadius, 5.0f);
+	if (p_SetFloatValue) {
+		p_SetFloatValue(child, (uint32_t)kIOHIDEventFieldDigitizerMajorRadius, 5.0f);
+		p_SetFloatValue(child, (uint32_t)kIOHIDEventFieldDigitizerMinorRadius, 5.0f);
 	}
 
-	p_IOHIDEventAppendEvent(parent, child, 0);
+	p_AppendEvent(parent, child, 0);
 	CFRelease(child);
 
-	if (p_IOHIDEventSetSenderID) {
-		p_IOHIDEventSetSenderID(parent, 0x000000010000027FULL);
+	if (p_SetSenderID) {
+		p_SetSenderID(parent, 0x000000010000027FULL);
 	}
 
-	IOHIDEventSystemClientRef client = p_IOHIDEventSystemClientCreate(kCFAllocatorDefault);
+	IOHIDEventSystemClientRef client = p_ClientCreate(kCFAllocatorDefault);
 	if (!client) {
 		CFRelease(parent);
 		NSLog(@"[Miao] EventSystemClientCreate failed");
 		return;
 	}
 
-	p_IOHIDEventSystemClientDispatchEvent(client, parent);
+	p_ClientDispatch(client, parent);
 	CFRelease(parent);
 	CFRelease(client);
 }

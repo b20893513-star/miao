@@ -7,9 +7,9 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = Miao
 
 Miao_FILES = Tweak.x TouchSim.mm
-Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations
-Miao_FRAMEWORKS = UIKit Foundation CoreGraphics
-Miao_LDFLAGS = -framework IOKit
+Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
+Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation
+# IOKit risolto a runtime via dlopen — non linkare il framework (spesso manca nei SDK Theos)
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 

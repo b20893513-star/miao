@@ -1,14 +1,3 @@
-/**
- * Miao v0 — solo SpringBoard (vedi miao.plist).
- *
- * Trigger: 3x Volume DOWN entro ~1.2s → tap alle coordinate in config.
- * Config (opzionale): /var/mobile/Library/Preferences/com.noxlab.miao.plist
- *   TapX (float), TapY (float) — points. Default: zona icone Home.
- *
- * Darwin notify (NewTerm):
- *   notifyutil -p com.noxlab.miao.tap
- */
-
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <notify.h>
@@ -73,9 +62,8 @@ static void MiaoOnVolumeDown(void) {
 
 %ctor {
 	NSLog(@"[Miao] loaded in %@", NSBundle.mainBundle.bundleIdentifier ?: @"?");
-
 	int token = 0;
-	notify_register_dispatch(kNotifyTap.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
+	notify_register_dispatch([kNotifyTap UTF8String], &token, dispatch_get_main_queue(), ^(int t) {
 		(void)t;
 		MiaoFireConfiguredTap();
 	});
