@@ -8,21 +8,53 @@ on:
 jobs:
   build:
     runs-on: macos-14
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      # Evita fallimenti brew su runner con tap non trusted (aws/tap, ecc.)
+      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: Randomblock1/theos-action@v1
+      - name: Install build tools
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install ldid make || brew install ldid
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH" || true
+
+      - name: Cache Theos
+        uses: actions/cache@v4
         with:
-          theos-dir: theos
-          theos-src: https://github.com/theos/theos
-          theos-sdks: https://github.com/theos/sdks
-          theos-sdks-branch: master
+          path: ${{ env.THEOS }}
+          key: theos-${{ runner.os }}-v1
+
+      - name: Install Theos
+        run: |
+          if [ ! -d "$THEOS/.git" ]; then
+            git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS"
+          else
+            echo "Theos cache hit"
+          fi
+
+      - name: Install iPhoneOS16.5 SDK
+        run: |
+          mkdir -p "$THEOS/sdks"
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk" ]; then
+            curl -L --fail -o /tmp/sdk.tar.xz \
+              https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+            tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks"
+            rm -f /tmp/sdk.tar.xz
+          fi
+          ls -la "$THEOS/sdks"
 
       - name: Build rootless package
         run: |
-          export THEOS="$GITHUB_WORKSPACE/theos"
+          export PATH="$(brew --prefix make)/libexec/gnubin:$PATH"
+          which make
+          make --version | head -n 1
           make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
           ls -la packages/
 
