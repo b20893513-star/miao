@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dopo install: ricorda respring. Non forziamo kill automatico aggressivo.
+echo "Miao installato. Esegui Respring / sbreload, poi testa 3x Volume DOWN sulla Home."
+exit 0

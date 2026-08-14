@@ -1,0 +1,34 @@
+name: Build Miao (.deb rootless)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        uses: Randomblock1/theos-action@v1
+        with:
+          theos-dir: theos
+          theos-src: https://github.com/theos/theos
+          theos-sdks: https://github.com/theos/sdks
+          theos-sdks-branch: master
+
+      - name: Build rootless package
+        run: |
+          export THEOS="$GITHUB_WORKSPACE/theos"
+          make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          ls -la packages/
+
+      - name: Upload .deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: miao-rootless-deb
+          path: packages/*.deb
+          if-no-files-found: error

@@ -1,0 +1,9 @@
+Package: com.noxlab.miao
+Name: Miao
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Tap automation rootless per Dopamine (v0: tap di prova da SpringBoard).
+Maintainer: noxlab
+Author: noxlab
+Section: Tweaks
+Depends: firmware (>= 15.0), mobilesubstrate | ellekit
