@@ -50,6 +50,9 @@ jobs:
             rm -f /tmp/sdk.tar.xz
           fi
           ls -la "$THEOS/sdks"
+      - name: Fix maintainer script permissions
+        run: chmod 755 layout/DEBIAN/postinst
+
 
       - name: Build rootless package
         run: |
