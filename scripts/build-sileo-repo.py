@@ -115,6 +115,16 @@ Description: Miao rootless tweaks for Dopamine (auto-built)
 """
     (repo_root / "Release").write_text(release, encoding="utf-8")
 
+    # Alcuni client Sileo/apt leggono anche ./Packages senza compressione
+    # e preferiscono un "flat repo" esplicito.
+    (repo_root / "CydiaIcon.png").write_bytes(b"")  # placeholder opzionale ignorato se vuoto
+    try:
+        (repo_root / "CydiaIcon.png").unlink(missing_ok=True)
+    except TypeError:
+        p = repo_root / "CydiaIcon.png"
+        if p.exists():
+            p.unlink()
+
     index = """<!DOCTYPE html>
 <html lang="it">
 <head>

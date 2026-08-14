@@ -1,9 +1,9 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.1.4
+Version: 0.1.5
 Architecture: iphoneos-arm64
-Description: Tap automation rootless — alert boot + volume via system notification.
-Maintainer: noxlab
+Description: Tap automation rootless Dopamine (alert + 3x Volume).
+Maintainer: noxlab <noxlab@local>
 Author: noxlab
 Section: Tweaks
-Depends: firmware (>= 15.0), ellekit | mobilesubstrate
+Depends: firmware (>= 15.0)
