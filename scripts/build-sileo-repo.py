@@ -2,11 +2,13 @@
 """Genera un mini-repo apt/Sileo a partire dai .deb in debs/."""
 from __future__ import annotations
 
+import bz2
+import gzip
 import hashlib
 import io
 import lzma
+import shutil
 import tarfile
-import zipfile
 from pathlib import Path
 
 
@@ -30,7 +32,6 @@ def _read_ar_member(data: bytes, name: str) -> bytes:
 
 def _control_from_deb(deb: Path) -> str:
     raw = deb.read_bytes()
-    # Prefer data member names used by Theos
     for member in ("control.tar.gz", "control.tar.xz", "control.tar.lzma", "control.tar"):
         try:
             blob = _read_ar_member(raw, member)
@@ -41,20 +42,15 @@ def _control_from_deb(deb: Path) -> str:
         raise RuntimeError(f"no control.tar* in {deb.name}")
 
     if member.endswith(".gz"):
-        import gzip
-
         tar_bytes = gzip.decompress(blob)
-    elif member.endswith(".xz"):
-        tar_bytes = lzma.decompress(blob)
-    elif member.endswith(".lzma"):
+    elif member.endswith(".xz") or member.endswith(".lzma"):
         tar_bytes = lzma.decompress(blob)
     else:
         tar_bytes = blob
 
     with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:") as tf:
         for m in tf.getmembers():
-            base = Path(m.name).name
-            if base == "control":
+            if Path(m.name).name == "control":
                 f = tf.extractfile(m)
                 assert f is not None
                 return f.read().decode("utf-8", "replace")
@@ -71,85 +67,102 @@ def _hashes(path: Path) -> tuple[str, str, str, int]:
     )
 
 
+def _version_key(control: str) -> str:
+    for line in control.splitlines():
+        if line.startswith("Version:"):
+            return line.split(":", 1)[1].strip()
+    return "0"
+
+
 def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:
     repo_root.mkdir(parents=True, exist_ok=True)
-    debs_dir = repo_root / "debs"
-    debs_dir.mkdir(parents=True, exist_ok=True)
+    (repo_root / "debs").mkdir(parents=True, exist_ok=True)
 
-    entries: list[str] = []
-    for deb in sorted(repo_root.glob(deb_glob)):
-        control = _control_from_deb(deb).strip() + "\n"
-        md5, sha1, sha256, size = _hashes(deb)
-        rel = f"debs/{deb.name}"
-        # Drop fields Theos may add that confuse some clients; keep essential + hashes
-        lines = []
-        for line in control.splitlines():
-            if line.startswith("Installed-Size:"):
-                continue
-            lines.append(line)
-        block = "\n".join(lines)
-        block += f"\nFilename: {rel}"
-        block += f"\nSize: {size}"
-        block += f"\nMD5sum: {md5}"
-        block += f"\nSHA1: {sha1}"
-        block += f"\nSHA256: {sha256}"
-        entries.append(block)
+    debs = sorted(repo_root.glob(deb_glob), key=lambda p: p.name)
+    if not debs:
+        raise SystemExit(f"Nessun .deb in {repo_root / 'debs'}")
 
-    packages = "\n\n".join(entries) + ("\n" if entries else "")
+    # Solo l'ultimo in Packages (upgrade chiaro); tieni tutti i file in debs/
+    latest = max(debs, key=lambda p: _version_key(_control_from_deb(p)))
+    shutil.copy2(latest, repo_root / "miao-latest.deb")
+
+    control = _control_from_deb(latest).strip() + "\n"
+    md5, sha1, sha256, size = _hashes(latest)
+    rel = f"debs/{latest.name}"
+    lines = [ln for ln in control.splitlines() if not ln.startswith("Installed-Size:")]
+    block = "\n".join(lines)
+    block += f"\nFilename: {rel}\nSize: {size}\nMD5sum: {md5}\nSHA1: {sha1}\nSHA256: {sha256}\n"
+    packages = block + "\n"
+
     (repo_root / "Packages").write_text(packages, encoding="utf-8")
+    gz = gzip.compress(packages.encode("utf-8"))
+    bz = bz2.compress(packages.encode("utf-8"))
+    (repo_root / "Packages.gz").write_bytes(gz)
+    (repo_root / "Packages.bz2").write_bytes(bz)
 
-    import bz2
-    import gzip
+    def _rel_hashes(name: str, data: bytes) -> str:
+        return (
+            f" {hashlib.md5(data).hexdigest()} {len(data)} {name}\n"
+            f"SHA1: {hashlib.sha1(data).hexdigest()} {len(data)} {name}\n"
+            f"SHA256: {hashlib.sha256(data).hexdigest()} {len(data)} {name}\n"
+        )
 
-    (repo_root / "Packages.gz").write_bytes(gzip.compress(packages.encode("utf-8")))
-    (repo_root / "Packages.bz2").write_bytes(bz2.compress(packages.encode("utf-8")))
-
-    release = """Origin: Miao
-Label: Miao
-Suite: stable
-Version: 1.0
-Codename: stable
-Architectures: iphoneos-arm64
-Components: main
-Description: Miao rootless tweaks for Dopamine (auto-built)
-"""
+    # Release con checksum (meglio per Sileo/apt)
+    release = (
+        "Origin: Miao\n"
+        "Label: Miao\n"
+        "Suite: stable\n"
+        "Version: 1.0\n"
+        "Codename: stable\n"
+        "Architectures: iphoneos-arm64\n"
+        "Components: main\n"
+        "Description: Miao rootless for Dopamine — aggiorna da Sileo\n"
+        "MD5Sum:\n"
+        f" {hashlib.md5(packages.encode()).hexdigest()} {len(packages.encode())} Packages\n"
+        f" {hashlib.md5(gz).hexdigest()} {len(gz)} Packages.gz\n"
+        f" {hashlib.md5(bz).hexdigest()} {len(bz)} Packages.bz2\n"
+        "SHA256:\n"
+        f" {hashlib.sha256(packages.encode()).hexdigest()} {len(packages.encode())} Packages\n"
+        f" {hashlib.sha256(gz).hexdigest()} {len(gz)} Packages.gz\n"
+        f" {hashlib.sha256(bz).hexdigest()} {len(bz)} Packages.bz2\n"
+    )
     (repo_root / "Release").write_text(release, encoding="utf-8")
 
-    # Alcuni client Sileo/apt leggono anche ./Packages senza compressione
-    # e preferiscono un "flat repo" esplicito.
-    (repo_root / "CydiaIcon.png").write_bytes(b"")  # placeholder opzionale ignorato se vuoto
-    try:
-        (repo_root / "CydiaIcon.png").unlink(missing_ok=True)
-    except TypeError:
-        p = repo_root / "CydiaIcon.png"
-        if p.exists():
-            p.unlink()
-
-    index = """<!DOCTYPE html>
+    ver = _version_key(control)
+    index = f"""<!DOCTYPE html>
 <html lang="it">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Miao repo</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }
-    code { background: #f2f2f2; padding: 0.1rem 0.35rem; border-radius: 4px; }
+    body {{ font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.45; }}
+    code {{ background: #f2f2f2; padding: 0.1rem 0.35rem; border-radius: 4px; word-break: break-all; }}
+    .box {{ background: #f7f7f7; padding: 1rem; border-radius: 8px; margin: 1rem 0; }}
   </style>
 </head>
 <body>
   <h1>Miao</h1>
-  <p>Repo Sileo / Dopamine rootless.</p>
-  <ol>
-    <li>Sileo → Sources → +</li>
-    <li>Aggiungi: <code>https://b20893513-star.github.io/miao/</code></li>
-    <li>Cerca <strong>Miao</strong> → Installa / Upgrade</li>
-    <li>Dopamine → Userspace Reboot</li>
-  </ol>
+  <p>Ultima versione: <strong>{ver}</strong></p>
+
+  <div class="box">
+    <h2>Flusso giusto (poi non scarichi piu nulla)</h2>
+    <ol>
+      <li>Sileo → Sources → + → <code>https://b20893513-star.github.io/miao/</code></li>
+      <li><strong>Una volta:</strong> Cerca <em>Miao</em> → Installa <strong>da Sileo</strong> (non da Filza)</li>
+      <li>Dopamine → Userspace Reboot</li>
+      <li><strong>Dopo:</strong> solo scheda Aggiornamenti / Upgrade in Sileo</li>
+    </ol>
+    <p>Se l&apos;avevi messo con Filza, Sileo non propone gli upgrade: disinstalla e reinstalla <em>dal source</em>.</p>
+  </div>
+
+  <p>URL fisso ultimo deb (solo emergenza):<br/>
+  <code>https://b20893513-star.github.io/miao/miao-latest.deb</code></p>
 </body>
 </html>
 """
     (repo_root / "index.html").write_text(index, encoding="utf-8")
-    print(f"Repo OK: {len(entries)} package(s) in {repo_root}")
+    print(f"Repo OK: latest={latest.name} version={ver}")
 
 
 if __name__ == "__main__":
