@@ -1,33 +1,34 @@
-# Miao 0.2.0 — install pulita
+# Miao — sessione Safari on-device
 
-Pacchetto unico: tweak + chiave SSH in `/var/mobile/.ssh/authorized_keys` (path reale).
+Tweak Dopamine/rootless: **3× Volume** avvia una sessione senza PC / Wi‑Fi.
 
-## Wipe e reinstall (fai cosi)
+## Flusso 0.4.0
 
-### 1) Cancella il casino vecchio (Filza)
-Elimina se esistono:
-- `/var/mobile/.ssh` (tutta la cartella)
-- `/var/jb/var/mobile/.ssh` (se c’e)
-- eventuali `authorized_keys` / `miao.ssh` nei Download
+1. Apre Safari su `SessionURL` (default `https://noxreel.uk/`)
+2. Dopo ~4s: tap soft al centro (play) — niente age gate
+3. Attende `WaitSeconds` (default 12)
+4. Prova a chiudere le schede Safari
+5. Ripete per `Cycles` volte
 
-### 2) Disinstalla pacchetti vecchi (Sileo)
-- Disinstalla **Miao**
-- Disinstalla **Miao SSH Key** se compare
+Niente HID digitizer (quello faceva schermo nero). L’IA/OCR arriva dopo.
 
-### 3) Installa SOLO questo
+## Install
+
 Source Sileo: `https://b20893513-star.github.io/miao/`  
-Cerca **Miao** → Installa **0.2.0**
+Oppure: `https://b20893513-star.github.io/miao/miao-latest.deb` → Filza → Installer → Userspace Reboot.
 
-Oppure URL fisso:  
-https://b20893513-star.github.io/miao/miao-latest.deb  
-→ Filza → Installer (non eseguire in NewTerm)
+## Preferenze
 
-### 4) Dopamine → Userspace Reboot
+File: `/var/mobile/Library/Preferences/com.noxlab.miao.plist`
 
-### 5) Test
-- Alert/toast **Miao**
-- 3x Volume
-- Da PC: SSH con chiave `miao_phone`
+| Chiave | Default | Nota |
+|--------|---------|------|
+| SessionURL | https://noxreel.uk/ | URL da aprire |
+| WaitSeconds | 12 | Secondi sul video (≥5) |
+| Cycles | 1 | Quante sessioni di fila |
+| Mode | session | `icon` = solo apri Safari |
+| TapX / TapY | centro schermo | Punto tap soft |
 
-## Trigger
-3x Volume = tap di prova
+## Log
+
+`/var/mobile/Documents/miao-loaded.txt`

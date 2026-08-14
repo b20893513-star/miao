@@ -2,11 +2,20 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <notify.h>
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
 static NSTimeInterval gLastVol = 0;
 static BOOL gBootDone = NO;
+static BOOL gSessionBusy = NO;
+
+static NSString *const kMiaoPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
+static NSString *const kMiaoDefaultURL = @"https://noxreel.uk/";
+static NSString *const kNotifyTap = "com.noxlab.miao.tapcenter";
+static NSString *const kNotifyCloseTabs = "com.noxlab.miao.closetabs";
+
+#pragma mark - Utils
 
 static void MiaoMarker(NSString *note) {
 	NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], note ?: @""];
@@ -54,13 +63,93 @@ static void MiaoToast(NSString *text) {
 	});
 }
 
-static CGPoint MiaoPoint(void) {
-	NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.noxlab.miao.plist"];
-	CGRect b = UIScreen.mainScreen.bounds;
-	CGFloat x = prefs[@"TapX"] ? [prefs[@"TapX"] doubleValue] : CGRectGetMidX(b);
-	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : 160.0;
-	return CGPointMake(x, y);
+static NSDictionary *MiaoPrefs(void) {
+	NSDictionary *p = [NSDictionary dictionaryWithContentsOfFile:kMiaoPrefPath];
+	return p ?: @{};
 }
+
+static NSString *MiaoSessionURL(void) {
+	NSString *u = MiaoPrefs()[@"SessionURL"];
+	if ([u isKindOfClass:[NSString class]] && u.length > 4) return u;
+	return kMiaoDefaultURL;
+}
+
+static NSTimeInterval MiaoWaitSeconds(void) {
+	id v = MiaoPrefs()[@"WaitSeconds"];
+	double s = v ? [v doubleValue] : 12.0;
+	if (s < 5.0) s = 5.0;
+	if (s > 120.0) s = 120.0;
+	return s;
+}
+
+static NSInteger MiaoCycles(void) {
+	id v = MiaoPrefs()[@"Cycles"];
+	NSInteger n = v ? [v integerValue] : 1;
+	if (n < 1) n = 1;
+	if (n > 20) n = 20;
+	return n;
+}
+
+static BOOL MiaoIsSpringBoard(void) {
+	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
+	return [bid isEqualToString:@"com.apple.springboard"];
+}
+
+static BOOL MiaoIsSafari(void) {
+	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
+	return [bid isEqualToString:@"com.apple.mobilesafari"];
+}
+
+#pragma mark - Open URL / Safari
+
+static BOOL MiaoOpenURLString(NSString *urlStr) {
+	if (urlStr.length == 0) return NO;
+	NSURL *url = [NSURL URLWithString:urlStr];
+	if (!url) return NO;
+	MiaoMarker([NSString stringWithFormat:@"openURL %@", urlStr]);
+
+	id app = [UIApplication sharedApplication];
+	if ([app respondsToSelector:@selector(openURL:options:completionHandler:)]) {
+		[app openURL:url options:@{} completionHandler:nil];
+		return YES;
+	}
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	if ([app respondsToSelector:@selector(openURL:)]) {
+		return [app openURL:url];
+	}
+#pragma clang diagnostic pop
+	return NO;
+}
+
+static BOOL MiaoOpenBundleID(NSString *bid) {
+	if (bid.length == 0) return NO;
+	MiaoMarker([NSString stringWithFormat:@"open bid %@", bid]);
+
+	Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+	if (wsCls) {
+		id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, NSSelectorFromString(@"defaultWorkspace"));
+		for (NSString *name in @[ @"openApplicationWithBundleID:", @"openApplicationWithBundleIdentifier:" ]) {
+			SEL sel = NSSelectorFromString(name);
+			if (ws && [ws respondsToSelector:sel]) {
+				@try {
+					if (((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, bid)) return YES;
+				} @catch (NSException *ex) { (void)ex; }
+			}
+		}
+	}
+
+	id app = [UIApplication sharedApplication];
+	SEL launchSel = NSSelectorFromString(@"launchApplicationWithIdentifier:suspended:");
+	if ([app respondsToSelector:launchSel]) {
+		@try {
+			if (((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)(app, launchSel, bid, NO)) return YES;
+		} @catch (NSException *ex) { (void)ex; }
+	}
+	return NO;
+}
+
+#pragma mark - Soft tap (in-process, no HID)
 
 static NSArray<UIWindow *> *MiaoAllWindows(void) {
 	NSMutableArray *arr = [NSMutableArray array];
@@ -77,228 +166,196 @@ static NSArray<UIWindow *> *MiaoAllWindows(void) {
 	return arr;
 }
 
-static BOOL MiaoIsIconView(UIView *v) {
-	NSString *cls = NSStringFromClass(v.class);
-	return [cls containsString:@"SBIconView"];
+static CGPoint MiaoTapPoint(void) {
+	NSDictionary *prefs = MiaoPrefs();
+	CGRect b = UIScreen.mainScreen.bounds;
+	CGFloat x = prefs[@"TapX"] ? [prefs[@"TapX"] doubleValue] : CGRectGetMidX(b);
+	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : (CGRectGetMidY(b) + 40.0);
+	return CGPointMake(x, y);
 }
 
-static void MiaoCollectIcons(UIView *view, NSMutableArray *out) {
-	if (MiaoIsIconView(view) && !view.hidden && view.alpha > 0.01) {
-		[out addObject:view];
-	}
-	for (UIView *sub in view.subviews) {
-		MiaoCollectIcons(sub, out);
-	}
-}
-
-static id MiaoIconFromView(UIView *iconView) {
-	if ([iconView respondsToSelector:@selector(icon)]) {
-		return ((id (*)(id, SEL))objc_msgSend)(iconView, @selector(icon));
-	}
-	return nil;
-}
-
-static NSString *MiaoIconName(id icon, UIView *iconView) {
-	@try {
-		if (icon && [icon respondsToSelector:@selector(displayName)]) {
-			id name = ((id (*)(id, SEL))objc_msgSend)(icon, @selector(displayName));
-			if ([name isKindOfClass:[NSString class]] && [name length]) return name;
+/// Tap soft: hitTest + UIControl / gesture — niente digitizer HID (quello crashava).
+static BOOL MiaoSoftTapAt(CGPoint pt) {
+	UIWindow *win = nil;
+	for (UIWindow *w in MiaoAllWindows()) {
+		if (w.isKeyWindow || w.windowLevel >= UIWindowLevelNormal) {
+			win = w;
+			if (w.isKeyWindow) break;
 		}
-		SEL locSel = NSSelectorFromString(@"displayNameForLocation:");
-		if (icon && [icon respondsToSelector:locSel]) {
-			id name = ((id (*)(id, SEL, NSInteger))objc_msgSend)(icon, locSel, 0);
-			if ([name isKindOfClass:[NSString class]] && [name length]) return name;
+	}
+	if (!win && MiaoAllWindows().count) win = MiaoAllWindows().firstObject;
+	if (!win) {
+		MiaoMarker(@"softTap no window");
+		return NO;
+	}
+
+	UIView *hit = [win hitTest:pt withEvent:nil];
+	MiaoMarker([NSString stringWithFormat:@"softTap (%.0f,%.0f) hit=%@", pt.x, pt.y, hit ? NSStringFromClass(hit.class) : @"nil"]);
+	if (!hit) return NO;
+
+	UIView *v = hit;
+	while (v) {
+		if ([v isKindOfClass:[UIControl class]]) {
+			UIControl *c = (UIControl *)v;
+			[c sendActionsForControlEvents:UIControlEventTouchUpInside];
+			return YES;
+		}
+		v = v.superview;
+	}
+
+	// Fallback: tap gesture recognizers
+	v = hit;
+	while (v) {
+		for (UIGestureRecognizer *gr in v.gestureRecognizers) {
+			if (![gr isKindOfClass:[UITapGestureRecognizer class]]) continue;
+			if (!gr.enabled) continue;
+			@try {
+				SEL act = NSSelectorFromString(@"_executeAction");
+				if ([gr respondsToSelector:act]) {
+					((void (*)(id, SEL))objc_msgSend)(gr, act);
+					return YES;
+				}
+				id targets = [gr valueForKey:@"_targets"];
+				(void)targets;
+			} @catch (NSException *ex) { (void)ex; }
+		}
+		// UIView tap via private
+		SEL tapSel = NSSelectorFromString(@"_sendActionsForEvents:withEvent:");
+		(void)tapSel;
+		v = v.superview;
+	}
+
+	// Ultimo tentativo: becomeFirstResponder / touches simulation minima su UIView
+	@try {
+		NSSet *set = [NSSet set];
+		(void)set;
+		if ([hit respondsToSelector:@selector(touchesBegan:withEvent:)]) {
+			// Senza UITouch reale spesso non basta — log e basta
+			MiaoMarker(@"softTap hit no control — serve OCR/IA dopo");
 		}
 	} @catch (NSException *ex) { (void)ex; }
-	return NSStringFromClass(iconView.class);
+	return NO;
 }
 
-static NSString *MiaoBundleID(id icon) {
-	if (!icon) return nil;
-	NSArray *sels = @[
-		@"applicationBundleID",
-		@"applicationBundleIdentifier",
-		@"leafIdentifier",
-		@"parentLeafIdentifier",
-	];
-	for (NSString *name in sels) {
-		SEL sel = NSSelectorFromString(name);
-		if (![icon respondsToSelector:sel]) continue;
-		@try {
-			id val = ((id (*)(id, SEL))objc_msgSend)(icon, sel);
-			if ([val isKindOfClass:[NSString class]] && [val length] && ![val containsString:@":"]) {
-				// leafIdentifier a volte e' bundle id puro
-				return val;
-			}
-			if ([val isKindOfClass:[NSString class]] && [val hasPrefix:@"com."]) {
-				return val;
-			}
-		} @catch (NSException *ex) { (void)ex; }
-	}
-	return nil;
+static void MiaoSoftTapCenter(void) {
+	CGPoint pt = MiaoTapPoint();
+	BOOL ok = MiaoSoftTapAt(pt);
+	MiaoToast(ok ? @"Tap soft OK" : @"Tap soft miss");
 }
 
-static BOOL MiaoOpenBundleID(NSString *bid) {
-	if (bid.length == 0) return NO;
-	MiaoMarker([NSString stringWithFormat:@"open bid %@", bid]);
+#pragma mark - Safari close tabs
 
-	// 1) LSApplicationWorkspace
-	Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
-	if (wsCls) {
-		id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, NSSelectorFromString(@"defaultWorkspace"));
-		NSArray *openSels = @[
-			@"openApplicationWithBundleID:",
-			@"openApplicationWithBundleIdentifier:",
-		];
-		for (NSString *name in openSels) {
-			SEL sel = NSSelectorFromString(name);
-			if (ws && [ws respondsToSelector:sel]) {
+static BOOL MiaoSafariCloseAllTabs(void) {
+	NSArray *classNames = @[ @"BrowserController", @"TabController", @"_SFBrowserController", @"SafariWebViewController" ];
+	for (NSString *cn in classNames) {
+		Class cls = NSClassFromString(cn);
+		if (!cls) continue;
+		id obj = nil;
+		for (NSString *shared in @[ @"sharedBrowserController", @"sharedInstance", @"sharedController" ]) {
+			SEL sel = NSSelectorFromString(shared);
+			if ([cls respondsToSelector:sel]) {
 				@try {
-					BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, bid);
-					if (ok) return YES;
+					obj = ((id (*)(id, SEL))objc_msgSend)(cls, sel);
+					if (obj) break;
 				} @catch (NSException *ex) { (void)ex; }
 			}
 		}
-		// openApplicationWithBundleIdentifier:configuration:error:
-		SEL confSel = NSSelectorFromString(@"openApplicationWithBundleIdentifier:configuration:error:");
-		if (ws && [ws respondsToSelector:confSel]) {
+		if (!obj) continue;
+
+		for (NSString *m in @[ @"closeAllTabs", @"closeAllOpenTabs", @"closeTabs:", @"closeAllTabsAnimated:" ]) {
+			SEL sel = NSSelectorFromString(m);
+			if (![obj respondsToSelector:sel]) continue;
 			@try {
-				NSError *err = nil;
-				BOOL ok = ((BOOL (*)(id, SEL, id, id, NSError **))objc_msgSend)(ws, confSel, bid, nil, &err);
-				if (ok) return YES;
+				if ([m hasSuffix:@":"]) {
+					((void (*)(id, SEL, id))objc_msgSend)(obj, sel, @YES);
+				} else {
+					((void (*)(id, SEL))objc_msgSend)(obj, sel);
+				}
+				MiaoMarker([NSString stringWithFormat:@"closeTabs via %@ %@", cn, m]);
+				return YES;
 			} @catch (NSException *ex) { (void)ex; }
 		}
 	}
-
-	// 2) UIApplication private
-	id app = [UIApplication sharedApplication];
-	SEL launchSel = NSSelectorFromString(@"launchApplicationWithIdentifier:suspended:");
-	if ([app respondsToSelector:launchSel]) {
-		@try {
-			BOOL ok = ((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)(app, launchSel, bid, NO);
-			if (ok) return YES;
-		} @catch (NSException *ex) { (void)ex; }
-	}
-
-	// 3) URL scheme fallback for common apps
-	NSDictionary *schemes = @{
-		@"com.apple.mobilesafari": @"http://",
-		@"com.apple.mobilemail": @"mailto:",
-		@"com.apple.mobileslideshow": @"photos-redirect://",
-		@"com.apple.camera": @"camera://",
-		@"com.apple.Preferences": @"prefs:",
-		@"com.apple.MobileSMS": @"sms:",
-		@"com.apple.mobilephone": @"tel://",
-	};
-	NSString *urlStr = schemes[bid];
-	if (urlStr) {
-		NSURL *url = [NSURL URLWithString:urlStr];
-		if (url) {
-			[app openURL:url options:@{} completionHandler:nil];
-			return YES;
-		}
-	}
-
+	MiaoMarker(@"closeTabs fail");
 	return NO;
 }
 
-static BOOL MiaoLaunchViaIconController(id icon, UIView *iconView) {
-	Class icCls = NSClassFromString(@"SBIconController");
-	if (!icCls) return NO;
-	id ctrl = nil;
-	if ([icCls respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
-		ctrl = ((id (*)(id, SEL))objc_msgSend)(icCls, NSSelectorFromString(@"sharedInstance"));
-	} else if ([icCls respondsToSelector:NSSelectorFromString(@"sharedInstanceIfExists")]) {
-		ctrl = ((id (*)(id, SEL))objc_msgSend)(icCls, NSSelectorFromString(@"sharedInstanceIfExists"));
-	}
-	if (!ctrl) return NO;
+#pragma mark - Session (SpringBoard)
 
-	NSArray *pairs = @[
-		@[ @"iconTapped:", iconView ?: icon ],
-		@[ @"_iconTapped:", iconView ?: icon ],
-		@[ @"iconHandleLongPress:", iconView ?: icon ],
-		@[ @"_launchIcon:", icon ],
-		@[ @"launchIcon:", icon ],
-	];
-	for (NSArray *pair in pairs) {
-		SEL sel = NSSelectorFromString(pair[0]);
-		id arg = pair[1];
-		if (!arg || ![ctrl respondsToSelector:sel]) continue;
-		@try {
-			((void (*)(id, SEL, id))objc_msgSend)(ctrl, sel, arg);
-			return YES;
-		} @catch (NSException *ex) { (void)ex; }
-	}
-	return NO;
+static void MiaoPost(const char *name) {
+	notify_post(name);
 }
 
-static void MiaoTapSpringBoardUI(void) {
-	CGPoint target = MiaoPoint();
-	NSMutableArray<UIView *> *icons = [NSMutableArray array];
-	for (UIWindow *win in MiaoAllWindows()) {
-		MiaoCollectIcons(win, icons);
-	}
-	MiaoMarker([NSString stringWithFormat:@"icons %lu at %.0f,%.0f", (unsigned long)icons.count, target.x, target.y]);
-	if (icons.count == 0) {
-		MiaoToast(@"Nessuna icona");
-		return;
-	}
+static void MiaoRunOneCycle(NSInteger index, NSInteger total, void (^done)(void)) {
+	NSString *url = MiaoSessionURL();
+	NSTimeInterval wait = MiaoWaitSeconds();
 
-	UIView *best = nil;
-	CGFloat bestDist = CGFLOAT_MAX;
-	UIView *containing = nil;
-	for (UIView *iconView in icons) {
-		CGRect frameInWin = [iconView convertRect:iconView.bounds toView:nil];
-		if (CGRectContainsPoint(frameInWin, target)) {
-			containing = iconView;
-			break;
-		}
-		CGPoint c = CGPointMake(CGRectGetMidX(frameInWin), CGRectGetMidY(frameInWin));
-		CGFloat d = (c.x - target.x) * (c.x - target.x) + (c.y - target.y) * (c.y - target.y);
-		if (d < bestDist) { bestDist = d; best = iconView; }
-	}
-	UIView *chosen = containing ?: best;
-	if (!chosen) {
-		MiaoToast(@"Nessun target");
-		return;
-	}
+	MiaoToast([NSString stringWithFormat:@"Ciclo %ld/%ld\nApro Safari", (long)(index + 1), (long)total]);
+	MiaoMarker([NSString stringWithFormat:@"cycle %ld url=%@", (long)index, url]);
 
-	id icon = MiaoIconFromView(chosen);
-	NSString *name = MiaoIconName(icon, chosen);
-	NSString *bid = MiaoBundleID(icon);
+	MiaoOpenURLString(url);
 
-	if (bid.length && MiaoOpenBundleID(bid)) {
-		MiaoToast([NSString stringWithFormat:@"Apro %@", name]);
-		MiaoMarker([NSString stringWithFormat:@"opened %@", bid]);
-		return;
-	}
-	if (MiaoLaunchViaIconController(icon, chosen)) {
-		MiaoToast([NSString stringWithFormat:@"Apro %@", name]);
-		return;
-	}
+	// Dopo caricamento: chiedi a Safari un tap soft al centro (play / video)
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		MiaoToast(@"Tap centro…");
+		MiaoPost(kNotifyTap);
+	});
 
-	// Foto: bundle tipico
-	if ([name.lowercaseString containsString:@"foto"] || [name.lowercaseString containsString:@"photo"]) {
-		if (MiaoOpenBundleID(@"com.apple.mobileslideshow")) {
-			MiaoToast(@"Apro Foto");
-			return;
-		}
-	}
-
-	MiaoToast([NSString stringWithFormat:@"Fail %@ %@", name, bid ?: @"?"]);
-	MiaoMarker([NSString stringWithFormat:@"fail name=%@ bid=%@", name, bid ?: @"nil"]);
-}
-
-static void MiaoFireTap(void) {
-	MiaoToast(@"3/3 → apro app…");
-	dispatch_async(dispatch_get_main_queue(), ^{
-		MiaoTapSpringBoardUI();
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((4.0 + wait) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		MiaoToast([NSString stringWithFormat:@"Attesi %.0fs — chiudo schede", wait]);
+		MiaoPost(kNotifyCloseTabs);
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			if (done) done();
+		});
 	});
 }
 
+static void MiaoSessionStep(NSInteger index, NSInteger total) {
+	if (index >= total) {
+		gSessionBusy = NO;
+		MiaoToast(@"Sessione fine");
+		MiaoMarker(@"session end");
+		return;
+	}
+	MiaoRunOneCycle(index, total, ^{
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			MiaoSessionStep(index + 1, total);
+		});
+	});
+}
+
+static void MiaoRunSession(void) {
+	if (!MiaoIsSpringBoard()) return;
+	if (gSessionBusy) {
+		MiaoToast(@"Sessione già in corso");
+		return;
+	}
+	gSessionBusy = YES;
+	NSInteger cycles = MiaoCycles();
+	MiaoToast(@"Sessione Miao…");
+	MiaoMarker(@"session start");
+	MiaoSessionStep(0, cycles);
+}
+
+#pragma mark - Volume trigger (SpringBoard)
+
+static void MiaoFire(void) {
+	NSString *mode = MiaoPrefs()[@"Mode"];
+	if ([mode isKindOfClass:[NSString class]] && [mode.lowercaseString isEqualToString:@"icon"]) {
+		// legacy: apri Safari bundle (non sessione)
+		MiaoToast(@"Apro Safari…");
+		if (MiaoOpenBundleID(@"com.apple.mobilesafari") || MiaoOpenURLString(@"https://")) {
+			return;
+		}
+		MiaoToast(@"Fail Safari");
+		return;
+	}
+	MiaoRunSession();
+}
+
 static void MiaoVol(void) {
+	if (!MiaoIsSpringBoard()) return;
 	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-	// Un solo impulso ogni 0.45s: altrimenti hook+notifica = 2 conti per 1 click fisico
 	if (now - gLastVol < 0.45) return;
 	gLastVol = now;
 	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 2.0) {
@@ -314,15 +371,49 @@ static void MiaoVol(void) {
 	}
 	gVolCount = 0;
 	gVolWindowStart = 0;
-	MiaoFireTap();
+	MiaoFire();
 }
 
 static void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
-	MiaoMarker(@"boot ok launch-bid");
-	MiaoToast(@"Miao OK - 3x Volume");
+	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"?";
+	MiaoMarker([NSString stringWithFormat:@"boot ok %@", bid]);
+	if (MiaoIsSpringBoard()) {
+		MiaoToast(@"Miao 0.4 — 3x Vol = sessione");
+	}
 }
+
+#pragma mark - Darwin (Safari)
+
+static void MiaoDarwinCallback(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+	(void)center; (void)observer; (void)object; (void)userInfo;
+	NSString *n = (__bridge NSString *)name;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if (!MiaoIsSafari()) return;
+		if ([n containsString:@"tapcenter"]) {
+			MiaoToast(@"Miao tap…");
+			MiaoSoftTapCenter();
+		} else if ([n containsString:@"closetabs"]) {
+			BOOL ok = MiaoSafariCloseAllTabs();
+			MiaoToast(ok ? @"Schede chiuse" : @"Chiudi schede fail");
+		}
+	});
+}
+
+static void MiaoRegisterSafariNotify(void) {
+	if (!MiaoIsSafari()) return;
+	CFNotificationCenterRef darwin = CFNotificationCenterGetDarwinNotifyCenter();
+	CFNotificationCenterAddObserver(darwin, NULL, MiaoDarwinCallback,
+		CFSTR("com.noxlab.miao.tapcenter"), NULL,
+		CFNotificationSuspensionBehaviorDeliverImmediately);
+	CFNotificationCenterAddObserver(darwin, NULL, MiaoDarwinCallback,
+		CFSTR("com.noxlab.miao.closetabs"), NULL,
+		CFNotificationSuspensionBehaviorDeliverImmediately);
+	MiaoMarker(@"safari notify registered");
+}
+
+#pragma mark - Hooks
 
 %hook SpringBoard
 - (void)applicationDidFinishLaunching:(id)app {
@@ -346,13 +437,18 @@ static void MiaoBoot(void) {
 
 %ctor {
 	@autoreleasepool {
-		MiaoMarker(@"ctor launch-bid");
-		[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
-														  object:nil
-														   queue:NSOperationQueue.mainQueue
-													  usingBlock:^(__unused NSNotification *n) { MiaoVol(); }];
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			MiaoBoot();
-		});
+		NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"?";
+		MiaoMarker([NSString stringWithFormat:@"ctor %@", bid]);
+		if (MiaoIsSpringBoard()) {
+			[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
+															  object:nil
+															   queue:NSOperationQueue.mainQueue
+														  usingBlock:^(__unused NSNotification *n) { MiaoVol(); }];
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+				MiaoBoot();
+			});
+		} else if (MiaoIsSafari()) {
+			MiaoRegisterSafariNotify();
+		}
 	}
 }
