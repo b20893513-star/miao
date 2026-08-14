@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.3.5
+Version: 0.3.6
 Architecture: iphoneos-arm64
-Description: No HID. Tap Home icons via SpringBoard hit-test (stable).
+Description: Tap nearest SpringBoard icon (no HID).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

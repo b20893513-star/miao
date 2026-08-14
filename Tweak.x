@@ -2,7 +2,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <notify.h>
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
@@ -38,13 +37,14 @@ static void MiaoToast(NSString *text) {
 		lab.textAlignment = NSTextAlignmentCenter;
 		lab.layer.cornerRadius = 10;
 		lab.clipsToBounds = YES;
+		lab.numberOfLines = 2;
 		lab.text = [NSString stringWithFormat:@"  %@  ", text];
 		[lab sizeToFit];
-		CGFloat w = MAX(180, lab.bounds.size.width + 28);
+		CGFloat w = MAX(200, lab.bounds.size.width + 28);
 		CGFloat h = MAX(40, lab.bounds.size.height + 14);
 		lab.frame = CGRectMake((win.bounds.size.width - w) / 2.0, 70, w, h);
 		[win addSubview:lab];
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 			[lab removeFromSuperview];
 		});
 	});
@@ -54,106 +54,160 @@ static CGPoint MiaoPoint(void) {
 	NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.noxlab.miao.plist"];
 	CGRect b = UIScreen.mainScreen.bounds;
 	CGFloat x = prefs[@"TapX"] ? [prefs[@"TapX"] doubleValue] : CGRectGetMidX(b);
-	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : (CGRectGetMidY(b) * 0.35);
+	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : 160.0; // prima riga icone tipica
 	return CGPointMake(x, y);
 }
 
-static BOOL MiaoTryMsg(id obj, NSArray<NSString *> *sels) {
+static NSArray<UIWindow *> *MiaoAllWindows(void) {
+	NSMutableArray *arr = [NSMutableArray array];
+	for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+		if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+		[arr addObjectsFromArray:((UIWindowScene *)scene).windows];
+	}
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	if (arr.count == 0 && UIApplication.sharedApplication.windows.count) {
+		[arr addObjectsFromArray:UIApplication.sharedApplication.windows];
+	}
+#pragma clang diagnostic pop
+	return arr;
+}
+
+static BOOL MiaoIsIconView(UIView *v) {
+	NSString *cls = NSStringFromClass(v.class);
+	return [cls containsString:@"SBIconView"] || [cls isEqualToString:@"SBIconView"];
+}
+
+static void MiaoCollectIcons(UIView *view, NSMutableArray *out) {
+	if (MiaoIsIconView(view) && !view.hidden && view.alpha > 0.01) {
+		[out addObject:view];
+	}
+	for (UIView *sub in view.subviews) {
+		MiaoCollectIcons(sub, out);
+	}
+}
+
+static NSString *MiaoIconName(UIView *iconView) {
+	@try {
+		id icon = nil;
+		if ([iconView respondsToSelector:@selector(icon)]) {
+			icon = ((id (*)(id, SEL))objc_msgSend)(iconView, @selector(icon));
+		}
+		if (icon && [icon respondsToSelector:@selector(displayName)]) {
+			id name = ((id (*)(id, SEL))objc_msgSend)(icon, @selector(displayName));
+			if ([name isKindOfClass:[NSString class]] && [name length]) return name;
+		}
+		if (icon && [icon respondsToSelector:NSSelectorFromString(@"displayNameForLocation:")]) {
+			SEL sel = NSSelectorFromString(@"displayNameForLocation:");
+			id name = ((id (*)(id, SEL, NSInteger))objc_msgSend)(icon, sel, 0);
+			if ([name isKindOfClass:[NSString class]] && [name length]) return name;
+		}
+	} @catch (NSException *ex) { (void)ex; }
+	return NSStringFromClass(iconView.class);
+}
+
+static BOOL MiaoInvokeIconTap(UIView *iconView) {
+	NSArray *sels = @[
+		@"iconTapped:",
+		@"iconTouchUp:",
+		@"tap:",
+		@"_launchIcon",
+	];
 	for (NSString *name in sels) {
 		SEL sel = NSSelectorFromString(name);
-		if ([obj respondsToSelector:sel]) {
-			NSMethodSignature *sig = [obj methodSignatureForSelector:sel];
-			if (!sig) continue;
-			NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-			inv.selector = sel;
-			inv.target = obj;
-			NSUInteger args = sig.numberOfArguments;
-			// id, SEL, then optional id event/sender
-			if (args >= 3) {
-				id nilObj = nil;
-				[inv setArgument:&nilObj atIndex:2];
-			}
+		if (![iconView respondsToSelector:sel]) continue;
+		NSMethodSignature *sig = [iconView methodSignatureForSelector:sel];
+		if (!sig) continue;
+		NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+		inv.target = iconView;
+		inv.selector = sel;
+		if (sig.numberOfArguments >= 3) {
+			id arg = nil;
+			[inv setArgument:&arg atIndex:2];
+		}
+		@try {
+			[inv invoke];
+			return YES;
+		} @catch (NSException *ex) { (void)ex; }
+	}
+
+	// Fallback: tap gesture recognizers
+	for (UIGestureRecognizer *gr in iconView.gestureRecognizers) {
+		NSString *gcls = NSStringFromClass(gr.class);
+		if ([gcls containsString:@"Tap"] || [gcls containsString:@"SB"]) {
 			@try {
-				[inv invoke];
-				MiaoMarker([NSString stringWithFormat:@"invoked %@ on %@", name, NSStringFromClass([obj class])]);
-				return YES;
-			} @catch (NSException *ex) {
-				(void)ex;
-			}
+				if ([gr respondsToSelector:@selector(touchesBegan:withEvent:)]) {
+					// last resort: perform action targets if any
+				}
+				Ivar targetsIvar = class_getInstanceVariable(object_getClass(gr), "_targets");
+				(void)targetsIvar;
+			} @catch (NSException *ex) { (void)ex; }
 		}
 	}
 	return NO;
 }
 
-// Tap "logico" sulla Home: niente HID (quello crashava backboardd/SpringBoard)
 static void MiaoTapSpringBoardUI(void) {
-	CGPoint p = MiaoPoint();
-	MiaoMarker([NSString stringWithFormat:@"ui-tap %.0f %.0f", p.x, p.y]);
-
-	UIWindow *win = nil;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-	win = UIApplication.sharedApplication.keyWindow;
-#pragma clang diagnostic pop
-	if (!win) {
-		for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-			if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-			for (UIWindow *w in ((UIWindowScene *)scene).windows) {
-				if (w.isKeyWindow) { win = w; break; }
-			}
-			if (!win && ((UIWindowScene *)scene).windows.count) {
-				win = ((UIWindowScene *)scene).windows.firstObject;
-			}
-			if (win) break;
-		}
+	CGPoint target = MiaoPoint();
+	NSMutableArray<UIView *> *icons = [NSMutableArray array];
+	for (UIWindow *win in MiaoAllWindows()) {
+		MiaoCollectIcons(win, icons);
 	}
-	if (!win) {
-		MiaoToast(@"TAP: no window");
+
+	MiaoMarker([NSString stringWithFormat:@"icons-found %lu target=%.0f,%.0f", (unsigned long)icons.count, target.x, target.y]);
+
+	if (icons.count == 0) {
+		MiaoToast(@"Nessuna icona trovata");
 		return;
 	}
 
-	UIView *hit = [win hitTest:p withEvent:nil];
-	UIView *cur = hit;
-	NSMutableString *chain = [NSMutableString string];
-	while (cur) {
-		[chain appendFormat:@"%@>", NSStringFromClass(cur.class)];
-		NSString *cls = NSStringFromClass(cur.class);
+	UIView *best = nil;
+	CGFloat bestDist = CGFLOAT_MAX;
+	UIView *containing = nil;
 
-		if ([cls containsString:@"SBIconView"] || [cls containsString:@"IconView"]) {
-			if (MiaoTryMsg(cur, @[
-				@"iconTapped:",
-				@"iconTouchUp:",
-				@"tap:",
-				@"_tap:",
-			])) {
-				MiaoToast(@"TAP icona");
-				return;
-			}
+	for (UIView *icon in icons) {
+		UIWindow *win = icon.window;
+		if (!win) continue;
+		CGRect frameInWin = [icon convertRect:icon.bounds toView:nil];
+		if (CGRectContainsPoint(frameInWin, target)) {
+			containing = icon;
+			break;
 		}
-
-		if ([cur isKindOfClass:[UIControl class]]) {
-			[(UIControl *)cur sendActionsForControlEvents:UIControlEventTouchUpInside];
-			MiaoToast(@"TAP control");
-			MiaoMarker(@"UIControl TouchUpInside");
-			return;
+		CGPoint c = CGPointMake(CGRectGetMidX(frameInWin), CGRectGetMidY(frameInWin));
+		CGFloat dx = c.x - target.x;
+		CGFloat dy = c.y - target.y;
+		CGFloat d = dx * dx + dy * dy;
+		if (d < bestDist) {
+			bestDist = d;
+			best = icon;
 		}
-
-		if ([cls containsString:@"UIButton"] || [cls containsString:@"Button"]) {
-			if (MiaoTryMsg(cur, @[@"sendActionsForControlEvents:", @"tap:"])) {
-				MiaoToast(@"TAP button");
-				return;
-			}
-		}
-
-		cur = cur.superview;
 	}
 
-	MiaoMarker([NSString stringWithFormat:@"no target chain %@", chain]);
-	MiaoToast(@"TAP: niente sotto");
+	UIView *chosen = containing ?: best;
+	if (!chosen) {
+		MiaoToast(@"Icone non tappabili");
+		return;
+	}
+
+	NSString *name = MiaoIconName(chosen);
+	BOOL ok = MiaoInvokeIconTap(chosen);
+	if (ok) {
+		MiaoToast([NSString stringWithFormat:@"Apro %@", name]);
+		MiaoMarker([NSString stringWithFormat:@"opened %@", name]);
+	} else {
+		// Ultimo tentativo: UIControl
+		if ([chosen isKindOfClass:[UIControl class]]) {
+			[(UIControl *)chosen sendActionsForControlEvents:UIControlEventTouchUpInside];
+			MiaoToast([NSString stringWithFormat:@"Control %@", name]);
+		} else {
+			MiaoToast([NSString stringWithFormat:@"Fail %@", name]);
+			MiaoMarker([NSString stringWithFormat:@"fail invoke %@", name]);
+		}
+	}
 }
 
 static void MiaoFireTap(void) {
-	MiaoToast(@"Miao TAP");
+	MiaoToast(@"Miao TAP…");
 	dispatch_async(dispatch_get_main_queue(), ^{
 		MiaoTapSpringBoardUI();
 	});
@@ -183,7 +237,7 @@ static void MiaoVol(void) {
 static void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
-	MiaoMarker(@"boot ok no-hid");
+	MiaoMarker(@"boot ok icon-scan");
 	MiaoToast(@"Miao OK - 3x Volume");
 }
 
@@ -209,7 +263,7 @@ static void MiaoBoot(void) {
 
 %ctor {
 	@autoreleasepool {
-		MiaoMarker(@"ctor springboard-ui-only");
+		MiaoMarker(@"ctor icon-scan");
 		[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
 														  object:nil
 														   queue:NSOperationQueue.mainQueue
