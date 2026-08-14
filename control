@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.3.4
+Version: 0.3.5
 Architecture: iphoneos-arm64
-Description: Soft single HID tap via backboardd only (no SpringBoard flood/crash).
+Description: No HID. Tap Home icons via SpringBoard hit-test (stable).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
