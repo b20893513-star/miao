@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.3.6
+Version: 0.3.7
 Architecture: iphoneos-arm64
-Description: Tap nearest SpringBoard icon (no HID).
+Description: Open Home icons via bundle ID / LSApplicationWorkspace.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

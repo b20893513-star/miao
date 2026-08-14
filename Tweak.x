@@ -54,7 +54,7 @@ static CGPoint MiaoPoint(void) {
 	NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:@"/var/mobile/Library/Preferences/com.noxlab.miao.plist"];
 	CGRect b = UIScreen.mainScreen.bounds;
 	CGFloat x = prefs[@"TapX"] ? [prefs[@"TapX"] doubleValue] : CGRectGetMidX(b);
-	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : 160.0; // prima riga icone tipica
+	CGFloat y = prefs[@"TapY"] ? [prefs[@"TapY"] doubleValue] : 160.0;
 	return CGPointMake(x, y);
 }
 
@@ -75,7 +75,7 @@ static NSArray<UIWindow *> *MiaoAllWindows(void) {
 
 static BOOL MiaoIsIconView(UIView *v) {
 	NSString *cls = NSStringFromClass(v.class);
-	return [cls containsString:@"SBIconView"] || [cls isEqualToString:@"SBIconView"];
+	return [cls containsString:@"SBIconView"];
 }
 
 static void MiaoCollectIcons(UIView *view, NSMutableArray *out) {
@@ -87,62 +87,143 @@ static void MiaoCollectIcons(UIView *view, NSMutableArray *out) {
 	}
 }
 
-static NSString *MiaoIconName(UIView *iconView) {
+static id MiaoIconFromView(UIView *iconView) {
+	if ([iconView respondsToSelector:@selector(icon)]) {
+		return ((id (*)(id, SEL))objc_msgSend)(iconView, @selector(icon));
+	}
+	return nil;
+}
+
+static NSString *MiaoIconName(id icon, UIView *iconView) {
 	@try {
-		id icon = nil;
-		if ([iconView respondsToSelector:@selector(icon)]) {
-			icon = ((id (*)(id, SEL))objc_msgSend)(iconView, @selector(icon));
-		}
 		if (icon && [icon respondsToSelector:@selector(displayName)]) {
 			id name = ((id (*)(id, SEL))objc_msgSend)(icon, @selector(displayName));
 			if ([name isKindOfClass:[NSString class]] && [name length]) return name;
 		}
-		if (icon && [icon respondsToSelector:NSSelectorFromString(@"displayNameForLocation:")]) {
-			SEL sel = NSSelectorFromString(@"displayNameForLocation:");
-			id name = ((id (*)(id, SEL, NSInteger))objc_msgSend)(icon, sel, 0);
+		SEL locSel = NSSelectorFromString(@"displayNameForLocation:");
+		if (icon && [icon respondsToSelector:locSel]) {
+			id name = ((id (*)(id, SEL, NSInteger))objc_msgSend)(icon, locSel, 0);
 			if ([name isKindOfClass:[NSString class]] && [name length]) return name;
 		}
 	} @catch (NSException *ex) { (void)ex; }
 	return NSStringFromClass(iconView.class);
 }
 
-static BOOL MiaoInvokeIconTap(UIView *iconView) {
+static NSString *MiaoBundleID(id icon) {
+	if (!icon) return nil;
 	NSArray *sels = @[
-		@"iconTapped:",
-		@"iconTouchUp:",
-		@"tap:",
-		@"_launchIcon",
+		@"applicationBundleID",
+		@"applicationBundleIdentifier",
+		@"leafIdentifier",
+		@"parentLeafIdentifier",
 	];
 	for (NSString *name in sels) {
 		SEL sel = NSSelectorFromString(name);
-		if (![iconView respondsToSelector:sel]) continue;
-		NSMethodSignature *sig = [iconView methodSignatureForSelector:sel];
-		if (!sig) continue;
-		NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-		inv.target = iconView;
-		inv.selector = sel;
-		if (sig.numberOfArguments >= 3) {
-			id arg = nil;
-			[inv setArgument:&arg atIndex:2];
-		}
+		if (![icon respondsToSelector:sel]) continue;
 		@try {
-			[inv invoke];
-			return YES;
+			id val = ((id (*)(id, SEL))objc_msgSend)(icon, sel);
+			if ([val isKindOfClass:[NSString class]] && [val length] && ![val containsString:@":"]) {
+				// leafIdentifier a volte e' bundle id puro
+				return val;
+			}
+			if ([val isKindOfClass:[NSString class]] && [val hasPrefix:@"com."]) {
+				return val;
+			}
+		} @catch (NSException *ex) { (void)ex; }
+	}
+	return nil;
+}
+
+static BOOL MiaoOpenBundleID(NSString *bid) {
+	if (bid.length == 0) return NO;
+	MiaoMarker([NSString stringWithFormat:@"open bid %@", bid]);
+
+	// 1) LSApplicationWorkspace
+	Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
+	if (wsCls) {
+		id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, NSSelectorFromString(@"defaultWorkspace"));
+		NSArray *openSels = @[
+			@"openApplicationWithBundleID:",
+			@"openApplicationWithBundleIdentifier:",
+		];
+		for (NSString *name in openSels) {
+			SEL sel = NSSelectorFromString(name);
+			if (ws && [ws respondsToSelector:sel]) {
+				@try {
+					BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, bid);
+					if (ok) return YES;
+				} @catch (NSException *ex) { (void)ex; }
+			}
+		}
+		// openApplicationWithBundleIdentifier:configuration:error:
+		SEL confSel = NSSelectorFromString(@"openApplicationWithBundleIdentifier:configuration:error:");
+		if (ws && [ws respondsToSelector:confSel]) {
+			@try {
+				NSError *err = nil;
+				BOOL ok = ((BOOL (*)(id, SEL, id, id, NSError **))objc_msgSend)(ws, confSel, bid, nil, &err);
+				if (ok) return YES;
+			} @catch (NSException *ex) { (void)ex; }
+		}
+	}
+
+	// 2) UIApplication private
+	id app = [UIApplication sharedApplication];
+	SEL launchSel = NSSelectorFromString(@"launchApplicationWithIdentifier:suspended:");
+	if ([app respondsToSelector:launchSel]) {
+		@try {
+			BOOL ok = ((BOOL (*)(id, SEL, id, BOOL))objc_msgSend)(app, launchSel, bid, NO);
+			if (ok) return YES;
 		} @catch (NSException *ex) { (void)ex; }
 	}
 
-	// Fallback: tap gesture recognizers
-	for (UIGestureRecognizer *gr in iconView.gestureRecognizers) {
-		NSString *gcls = NSStringFromClass(gr.class);
-		if ([gcls containsString:@"Tap"] || [gcls containsString:@"SB"]) {
-			@try {
-				if ([gr respondsToSelector:@selector(touchesBegan:withEvent:)]) {
-					// last resort: perform action targets if any
-				}
-				Ivar targetsIvar = class_getInstanceVariable(object_getClass(gr), "_targets");
-				(void)targetsIvar;
-			} @catch (NSException *ex) { (void)ex; }
+	// 3) URL scheme fallback for common apps
+	NSDictionary *schemes = @{
+		@"com.apple.mobilesafari": @"http://",
+		@"com.apple.mobilemail": @"mailto:",
+		@"com.apple.mobileslideshow": @"photos-redirect://",
+		@"com.apple.camera": @"camera://",
+		@"com.apple.Preferences": @"prefs:",
+		@"com.apple.MobileSMS": @"sms:",
+		@"com.apple.mobilephone": @"tel://",
+	};
+	NSString *urlStr = schemes[bid];
+	if (urlStr) {
+		NSURL *url = [NSURL URLWithString:urlStr];
+		if (url) {
+			[app openURL:url options:@{} completionHandler:nil];
+			return YES;
 		}
+	}
+
+	return NO;
+}
+
+static BOOL MiaoLaunchViaIconController(id icon, UIView *iconView) {
+	Class icCls = NSClassFromString(@"SBIconController");
+	if (!icCls) return NO;
+	id ctrl = nil;
+	if ([icCls respondsToSelector:NSSelectorFromString(@"sharedInstance")]) {
+		ctrl = ((id (*)(id, SEL))objc_msgSend)(icCls, NSSelectorFromString(@"sharedInstance"));
+	} else if ([icCls respondsToSelector:NSSelectorFromString(@"sharedInstanceIfExists")]) {
+		ctrl = ((id (*)(id, SEL))objc_msgSend)(icCls, NSSelectorFromString(@"sharedInstanceIfExists"));
+	}
+	if (!ctrl) return NO;
+
+	NSArray *pairs = @[
+		@[ @"iconTapped:", iconView ?: icon ],
+		@[ @"_iconTapped:", iconView ?: icon ],
+		@[ @"iconHandleLongPress:", iconView ?: icon ],
+		@[ @"_launchIcon:", icon ],
+		@[ @"launchIcon:", icon ],
+	];
+	for (NSArray *pair in pairs) {
+		SEL sel = NSSelectorFromString(pair[0]);
+		id arg = pair[1];
+		if (!arg || ![ctrl respondsToSelector:sel]) continue;
+		@try {
+			((void (*)(id, SEL, id))objc_msgSend)(ctrl, sel, arg);
+			return YES;
+		} @catch (NSException *ex) { (void)ex; }
 	}
 	return NO;
 }
@@ -153,57 +234,54 @@ static void MiaoTapSpringBoardUI(void) {
 	for (UIWindow *win in MiaoAllWindows()) {
 		MiaoCollectIcons(win, icons);
 	}
-
-	MiaoMarker([NSString stringWithFormat:@"icons-found %lu target=%.0f,%.0f", (unsigned long)icons.count, target.x, target.y]);
-
+	MiaoMarker([NSString stringWithFormat:@"icons %lu at %.0f,%.0f", (unsigned long)icons.count, target.x, target.y]);
 	if (icons.count == 0) {
-		MiaoToast(@"Nessuna icona trovata");
+		MiaoToast(@"Nessuna icona");
 		return;
 	}
 
 	UIView *best = nil;
 	CGFloat bestDist = CGFLOAT_MAX;
 	UIView *containing = nil;
-
-	for (UIView *icon in icons) {
-		UIWindow *win = icon.window;
-		if (!win) continue;
-		CGRect frameInWin = [icon convertRect:icon.bounds toView:nil];
+	for (UIView *iconView in icons) {
+		CGRect frameInWin = [iconView convertRect:iconView.bounds toView:nil];
 		if (CGRectContainsPoint(frameInWin, target)) {
-			containing = icon;
+			containing = iconView;
 			break;
 		}
 		CGPoint c = CGPointMake(CGRectGetMidX(frameInWin), CGRectGetMidY(frameInWin));
-		CGFloat dx = c.x - target.x;
-		CGFloat dy = c.y - target.y;
-		CGFloat d = dx * dx + dy * dy;
-		if (d < bestDist) {
-			bestDist = d;
-			best = icon;
-		}
+		CGFloat d = (c.x - target.x) * (c.x - target.x) + (c.y - target.y) * (c.y - target.y);
+		if (d < bestDist) { bestDist = d; best = iconView; }
 	}
-
 	UIView *chosen = containing ?: best;
 	if (!chosen) {
-		MiaoToast(@"Icone non tappabili");
+		MiaoToast(@"Nessun target");
 		return;
 	}
 
-	NSString *name = MiaoIconName(chosen);
-	BOOL ok = MiaoInvokeIconTap(chosen);
-	if (ok) {
+	id icon = MiaoIconFromView(chosen);
+	NSString *name = MiaoIconName(icon, chosen);
+	NSString *bid = MiaoBundleID(icon);
+
+	if (bid.length && MiaoOpenBundleID(bid)) {
 		MiaoToast([NSString stringWithFormat:@"Apro %@", name]);
-		MiaoMarker([NSString stringWithFormat:@"opened %@", name]);
-	} else {
-		// Ultimo tentativo: UIControl
-		if ([chosen isKindOfClass:[UIControl class]]) {
-			[(UIControl *)chosen sendActionsForControlEvents:UIControlEventTouchUpInside];
-			MiaoToast([NSString stringWithFormat:@"Control %@", name]);
-		} else {
-			MiaoToast([NSString stringWithFormat:@"Fail %@", name]);
-			MiaoMarker([NSString stringWithFormat:@"fail invoke %@", name]);
+		return;
+	}
+	if (MiaoLaunchViaIconController(icon, chosen)) {
+		MiaoToast([NSString stringWithFormat:@"Launch %@", name]);
+		return;
+	}
+
+	// Foto: bundle tipico
+	if ([name.lowercaseString containsString:@"foto"] || [name.lowercaseString containsString:@"photo"]) {
+		if (MiaoOpenBundleID(@"com.apple.mobileslideshow")) {
+			MiaoToast(@"Apro Foto");
+			return;
 		}
 	}
+
+	MiaoToast([NSString stringWithFormat:@"Fail %@ %@", name, bid ?: @"?"]);
+	MiaoMarker([NSString stringWithFormat:@"fail name=%@ bid=%@", name, bid ?: @"nil"]);
 }
 
 static void MiaoFireTap(void) {
@@ -217,7 +295,6 @@ static void MiaoVol(void) {
 	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
 	if (now - gLastVol < 0.15) return;
 	gLastVol = now;
-
 	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 1.6) {
 		gVolWindowStart = now;
 		gVolCount = 1;
@@ -237,7 +314,7 @@ static void MiaoVol(void) {
 static void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
-	MiaoMarker(@"boot ok icon-scan");
+	MiaoMarker(@"boot ok launch-bid");
 	MiaoToast(@"Miao OK - 3x Volume");
 }
 
@@ -263,7 +340,7 @@ static void MiaoBoot(void) {
 
 %ctor {
 	@autoreleasepool {
-		MiaoMarker(@"ctor icon-scan");
+		MiaoMarker(@"ctor launch-bid");
 		[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
 														  object:nil
 														   queue:NSOperationQueue.mainQueue
