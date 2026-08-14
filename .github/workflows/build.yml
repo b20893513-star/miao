@@ -61,8 +61,22 @@ jobs:
         run: |
           GMAKE="$(brew --prefix make)/libexec/gnubin/make"
           set -o pipefail
+          echo "ARCHS in Makefile:"; grep ARCHS Makefile
           "$GMAKE" clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless 2>&1 | tee build.log
           ls -la packages/
+          # Estrai dylib e verifica FAT arm64e (obbligatorio per SpringBoard A12+)
+          deb=$(ls packages/*.deb | head -n1)
+          tmp=$(mktemp -d)
+          (cd "$tmp" && ar x "$GITHUB_WORKSPACE/$deb" && tar -xf data.tar.* 2>/dev/null || tar --lzma -xf data.tar.lzma)
+          dylib=$(find "$tmp" -name 'Miao.dylib' | head -n1)
+          echo "dylib=$dylib"
+          lipo -info "$dylib"
+          lipo -info "$dylib" | tee lipo.txt
+          if ! grep -q arm64e lipo.txt; then
+            echo "ERROR: Miao.dylib manca lo slice arm64e — SpringBoard non carichera il tweak"
+            exit 1
+          fi
+          echo "OK: arm64e presente"
 
       - name: Upload build log on failure
         if: failure()
