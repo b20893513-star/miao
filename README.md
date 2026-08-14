@@ -1,67 +1,60 @@
 # Miao
 
-Tweak **rootless** per **Dopamine** (iOS 15–16): tap simulato da SpringBoard.  
-Ispirato allo stile XXTouch (automazione tap), ma **codice nostro** — non crack / non reverse di XXTouch Elite.
+Tweak **rootless** per **Dopamine** (tap da SpringBoard).  
+Aggiornamenti: **repo Sileo** automatico (niente zip Actions ogni volta).
 
-> **v0** = prova su Home. Inject **solo SpringBoard** (non Safari), per ridurre il rischio di rompere i siti come ZXTouch/AutoTouch.
+## Aggiornare dal telefono (consigliato)
 
-## Cosa fa (v0)
+1. Una volta sola — GitHub → repo **miao** → **Settings → Pages**  
+   Source: Deploy from branch **`gh-pages`** / root  
+   (dopo la prima CI verde compare il branch `gh-pages`)
 
-| Azione | Effetto |
+2. Sileo → **Sources** → **+** → aggiungi:
+   ```
+   https://b20893513-star.github.io/miao/
+   ```
+
+3. Cerca **Miao** → **Installa** o **Upgrade**
+
+4. App **Dopamine** → **Userspace Reboot**
+
+Da quel momento, a ogni fix: Sileo → refresh → Upgrade. Fine.
+
+Pagina repo: https://b20893513-star.github.io/miao/
+
+## Test v0 (dopo install)
+
+- Toast **«Miao attivo»** dopo reboot (se manca, in Filza controlla `Miao.dylib`)
+- **3× Volume** (su o giù) → toast 1/3 → 2/3 → TAP
+- Verifica marker: `/var/mobile/Documents/miao-loaded.txt`
+- Controlla che Safari carichi ancora i siti
+
+## SSH opzionale (install automatica da CI)
+
+Sul telefono: OpenSSH, stessa Wi‑Fi del PC / raggiungibile.
+
+In GitHub → Settings → Secrets → Actions, crea:
+
+| Secret | Esempio |
 |--------|---------|
-| **3× Volume DOWN** entro ~1.2s | Tap alle coordinate in config |
-| `notifyutil -p com.noxlab.miao.tap` | Stesso tap |
-| Config plist | `TapX` / `TapY` in points |
+| `PHONE_HOST` | `192.168.1.20` |
+| `PHONE_PORT` | `22` (opzionale) |
+| `PHONE_USER` | `mobile` (opzionale) |
+| `PHONE_SSH_KEY` | chiave privata OpenSSH |
 
-Default senza config: tap verso la zona icone Home (non il centro assoluto).
-
-## Build senza Mac (GitHub Actions)
-
-1. Pusha questo repo su GitHub (es. `b20893513-star/miao`).
-2. Tab **Actions** → workflow **Build Miao** → **Run workflow** (o push su `main`).
-3. Scarica l’artifact **`miao-rootless-deb`**.
-4. Sul telefono: Filza → apri il `.deb` → installa → **Respring** (`sbreload` o Dopamine).
-
-### Build locale (se hai Mac + Theos)
+Da PC (senza CI):
 
 ```bash
-export THEOS=~/theos
-make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+export PHONE_HOST=192.168.1.20
+./scripts/ssh-install.sh packages/*.deb
 ```
 
-## Install e test (ordine importante)
+## Build locale / artifact
 
-1. Installa il `.deb` rootless (`iphoneos-arm64`).
-2. Respring.
-3. **Home**: 3× Volume DOWN → deve muoversi/tapparsi qualcosa (icona / area).
-4. **Subito dopo**: apri Safari → `https://noxreel.uk` (o qualsiasi sito).  
-   - Se **non carica** → disinstalla Miao e segnala: v0 ha comunque rotto qualcosa (improbabile con filter solo SB, ma possibile via HID globale).
-5. Se Home OK e Safari OK → possiamo passare a **v1** (tap con Safari in foreground / script loop).
+CI: push su `main` → artifact `miao-rootless-deb` + publish Pages.  
+Manuale: `make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless`
 
-### Config coordinate
+## Note
 
-Copia `config.example.plist` in:
-
-`/var/mobile/Library/Preferences/com.noxlab.miao.plist`
-
-Modifica `TapX` / `TapY` (points). iPhone 11 Pro Max ≈ **414×896**.
-
-## Perché non iniettiamo Safari in v0
-
-ZXTouch / AutoTouch injectano in Safari e sul tuo device **rompono il caricamento siti**.  
-Miao v0 gira **solo in SpringBoard**. Il tap usa eventi HID a livello sistema: se anche così Safari muore, lo documentiamo e cambiamo approccio (daemon isolato / altro path).
-
-## Roadmap
-
-- [x] v0 — tap fisso + trigger volume / notify
-- [ ] v1 — sequenza tap (script plist / JSON)
-- [ ] v2 — open URL Safari + wait + tap age/play (noxreel)
-- [ ] v3 — loop stile `human-auto-session` (view ≥10s, gestione tab)
-
-## Licenza / etica
-
-Codice originale per il tuo lab. **Non** includere crack di XXTouch Elite o altri tool a pagamento.
-
-## Disclaimer
-
-Automazione UI su device jailbroken può essere instabile. Usala solo sul **tuo** iPhone e sui **tuoi** siti.
+- Inject solo **SpringBoard** (non Safari) in v0
+- Non è un crack di XXTouch Elite

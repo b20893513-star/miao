@@ -18,7 +18,7 @@ static void MiaoWriteMarker(NSString *note) {
 	];
 	NSData *data = [msg dataUsingEncoding:NSUTF8StringEncoding];
 	for (NSString *p in paths) {
-		@try { [data writeToFile:p atomically:YES]; } @catch (__unused NSException *e) {}
+		[data writeToFile:p atomically:YES];
 	}
 }
 
