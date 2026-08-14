@@ -77,7 +77,9 @@ static BOOL MiaoTryMsg(id obj, NSArray<NSString *> *sels) {
 				[inv invoke];
 				MiaoMarker([NSString stringWithFormat:@"invoked %@ on %@", name, NSStringFromClass([obj class])]);
 				return YES;
-			} @catch (__unused NSException *ex) {}
+			} @catch (NSException *ex) {
+				(void)ex;
+			}
 		}
 	}
 	return NO;
