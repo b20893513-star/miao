@@ -248,7 +248,12 @@ static NSString *MiaoHidWho(void) {
 	NSString *s = [NSString stringWithContentsOfFile:kHidAliveDoc encoding:NSUTF8StringEncoding error:nil];
 	if (!s.length) s = [NSString stringWithContentsOfFile:kBbAlivePath encoding:NSUTF8StringEncoding error:nil];
 	s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-	return s.length ? s : @"?";
+	if ([s hasPrefix:@"sb"] || [s isEqualToString:@"sb"]) return @"sb";
+	if ([s hasPrefix:@"bb"] || [s isEqualToString:@"bb"]) return @"bb";
+	NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kBbAlivePlist];
+	NSString *who = [pl[@"who"] description];
+	if (who.length) return who;
+	return MiaoIsSB() ? @"sb" : @"on";
 }
 
 /// getBoundingClientRect (viewport WK) → punti finestra Safari.
@@ -377,38 +382,52 @@ void MiaoStartHidWorker(void) {
 	};
 
 	void (^consume)(void) = ^{
-		CGFloat nx = -1, ny = -1;
+		CGFloat sx = -1, sy = -1, nx = -1, ny = -1;
+
+		// Preferisci punti schermo dal plist (path SB → Safari)
+		NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kHidPlist];
+		if (pl[@"x"] && pl[@"y"]) {
+			sx = [pl[@"x"] doubleValue];
+			sy = [pl[@"y"] doubleValue];
+			nx = [pl[@"nx"] doubleValue];
+			ny = [pl[@"ny"] doubleValue];
+			[[NSFileManager defaultManager] removeItemAtPath:kHidPlist error:nil];
+		}
+
 		for (NSString *path in @[ kHidPath, kHidPathDoc ]) {
 			NSString *raw = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
 			if (raw.length < 3) continue;
 			[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+			if (sx >= 0) break; // gia' abbiamo screen pts
 			NSString *line = [[raw componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] firstObject];
 			NSArray *p = [line componentsSeparatedByString:@","];
 			if (p.count >= 2) {
 				nx = [p[0] doubleValue];
 				ny = [p[1] doubleValue];
-				break;
+			}
+			break;
+		}
+
+		if (sx < 0 && nx >= 0) {
+			// solo norm → stima schermo 414x896 (fallback)
+			if (nx <= 1.5) {
+				sx = nx * 414.0;
+				sy = ny * 896.0;
+			} else {
+				sx = nx;
+				sy = ny;
 			}
 		}
-		if (nx < 0) {
-			NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kHidPlist];
-			if (pl[@"nx"]) {
-				nx = [pl[@"nx"] doubleValue];
-				ny = [pl[@"ny"] doubleValue];
-				[[NSFileManager defaultManager] removeItemAtPath:kHidPlist error:nil];
-			}
-		}
-		if (nx < 0) return;
-		if (nx > 1.5) { nx /= 414.0; ny /= 896.0; }
+		if (sx < 0) return;
 
 		NSTimeInterval now = NSDate.date.timeIntervalSince1970;
 		if (now - gLastHidExec < 0.55) return;
 		gLastHidExec = now;
 
-		MiaoLog([NSString stringWithFormat:@"SB-HID exec %.3f,%.3f", nx, ny]);
-		// fuori dal main per non bloccare SB
+		MiaoLog([NSString stringWithFormat:@"SB-HID screen %.0f,%.0f", sx, sy]);
 		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-			MiaoPerformHumanTapNorm(nx, ny);
+			// contextId + BKS + inject: necessario perche' ClientDispatch da SB non arriva a Safari
+			MiaoPerformHumanTapScreen(sx, sy);
 			[@"ok-sb\n" writeToFile:@"/var/mobile/Documents/miao-hid-ack.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 		});
 	};
@@ -1017,7 +1036,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.5 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.6 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 

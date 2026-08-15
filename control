@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.8.5
+Version: 0.8.6
 Architecture: iphoneos-arm64
-Description: HID worker in SpringBoard (Dopamine often skips backboardd inject).
+Description: HID screen+contextId from SB/backboardd so taps reach Safari.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

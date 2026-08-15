@@ -5,8 +5,11 @@
 extern "C" {
 #endif
 
-/// Gesto dito con coordinate NORMALIZZATE 0..1 (niente UIKit / UIScreen).
+/// Coords NORMALIZZATE 0..1 (path backboardd / SimulateTouch).
 void MiaoPerformHumanTapNorm(CGFloat nx, CGFloat ny);
+
+/// Coords SCHERMO in points + contextId CAWindowServer (path SpringBoard → Safari).
+void MiaoPerformHumanTapScreen(CGFloat x, CGFloat y);
 
 #ifdef __cplusplus
 }
