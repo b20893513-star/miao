@@ -67,11 +67,19 @@ def _hashes(path: Path) -> tuple[str, str, str, int]:
     )
 
 
-def _version_key(control: str) -> str:
+def _version_key(control: str) -> tuple:
+    ver = "0"
     for line in control.splitlines():
         if line.startswith("Version:"):
-            return line.split(":", 1)[1].strip()
-    return "0"
+            ver = line.split(":", 1)[1].strip()
+            break
+    parts: list[int] = []
+    for bit in ver.replace("-", ".").split("."):
+        num = "".join(ch for ch in bit if ch.isdigit())
+        parts.append(int(num) if num else 0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:4])
 
 
 def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:

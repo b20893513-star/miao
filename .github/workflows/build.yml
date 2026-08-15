@@ -112,6 +112,15 @@ jobs:
           cp packages/*.deb sileo-repo/debs/
           python3 scripts/build-sileo-repo.py sileo-repo
           ls -la sileo-repo sileo-repo/debs
+          echo "===== Packages ====="
+          cat sileo-repo/Packages
+          EXPECT=$(grep '^Version:' control | awk '{print $2}')
+          GOT=$(grep '^Version:' sileo-repo/Packages | awk '{print $2}')
+          echo "control=$EXPECT packages=$GOT"
+          if [ "$EXPECT" != "$GOT" ]; then
+            echo "::error::Packages version ($GOT) != control ($EXPECT)"
+            exit 1
+          fi
 
       - name: Publish Sileo repo to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
@@ -119,6 +128,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./sileo-repo
           force_orphan: true
+          commit_message: "deploy ${{ github.sha }} miao repo"
 
       - name: SSH install on iPhone (optional)
         env:

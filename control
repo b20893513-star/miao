@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.6.3
+Version: 0.6.4
 Architecture: iphoneos-arm64
-Description: Human HID taps; Logos-safe split (MiaoCore.m).
+Description: Human HID taps (Safari). Repo republish.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
