@@ -4,11 +4,17 @@ INSTALL_TARGET_PROCESSES = SpringBoard MobileSafari backboardd
 
 include $(THEOS)/makefiles/common.mk
 
-TWEAK_NAME = Miao
+# Due dylib: Miao (SB+Safari, UIKit) e MiaoHID (solo backboardd, NO UIKit)
+TWEAK_NAME = Miao MiaoHID
 
-# HID trusted: eseguito in backboardd. Safari manda solo coordinate.
-Miao_FILES = Tweak.x MiaoCore.m TouchSim.m
+Miao_FILES = Tweak.x MiaoCore.m
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation
+Miao_LIBRARIES = notify
+
+MiaoHID_FILES = MiaoHID.x TouchSimBB.m
+MiaoHID_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
+MiaoHID_FRAMEWORKS = Foundation CoreFoundation CoreGraphics
+MiaoHID_LIBRARIES = notify
 
 include $(THEOS_MAKE_PATH)/tweak.mk

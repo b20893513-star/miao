@@ -31,9 +31,7 @@
 		} else if (MiaoIsSafari()) {
 			dispatch_async(dispatch_get_main_queue(), ^{ MiaoStartSafari(); });
 			MiaoAfter(2, ^{ MiaoBoot(); });
-		} else if (MiaoIsBackboardd()) {
-			MiaoStartBackboardd();
-			MiaoLog(@"backboardd HID online");
 		}
+		// backboardd: gestito da MiaoHID.dylib (no UIKit)
 	}
 }

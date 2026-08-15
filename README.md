@@ -1,16 +1,24 @@
-# Miao 0.8.1
+# Miao 0.8.2
 
-## Fix
-`backboardd` non e' un Bundle: con solo `Bundles` **non veniva iniettato**.  
-Ora: `Executables = (backboardd)`. Comandi HID su `/var/tmp/miao-hid.txt` (leggibile dal daemon).
+## Perché `HID? backboardd OFF`
+Una sola dylib con **UIKit** iniettata in `backboardd` spesso **non carica** (crash/load fail) → niente file alive → toast OFF → **nessun tap trusted** → **niente ads/popunder**.
+
+## Fix 0.8.2
+Due dylib nello stesso `.deb`:
+
+| Dylib | Processo | Ruolo |
+|-------|----------|--------|
+| `Miao.dylib` | SpringBoard + Safari | sessione, JS, scrive coords |
+| `MiaoHID.dylib` | **solo** backboardd | gesto HID (IOKit, **no UIKit**) |
 
 ## Dopo install
-**Userspace Reboot** obbligatorio.
+1. Sileo → aggiorna → **Userspace Reboot** (obbligatorio)
+2. Apri Safari su noxreel → **3× Volume**
+3. Al tap thumb: toast deve essere **`HID x,y`**, non `backboardd OFF`
 
-## Verifica
-- Toast `HID x,y` = Safari manda coords  
-- Toast `HID? backboardd OFF` = daemon non vivo  
-- File `/var/tmp/miao-bb-alive.txt` deve esistere  
-- Log `/var/tmp/miao-bb.log` con `hid-exec`
+## Verifica (NewTerm / Filza)
+- Esiste `/var/tmp/miao-bb-alive.txt` **oppure** prefs `com.noxlab.miao.bb.plist` con `alive=1`
+- Log `/var/tmp/miao-bb.log` con riga `MiaoHID online` e poi `exec norm=...`
+- In `/var/jb/Library/MobileSubstrate/DynamicLibraries/` ci sono **entrambe** `Miao.dylib` e `MiaoHID.dylib` (+ `.plist`)
 
-Se `backboardd OFF` → l'iniezione daemon non prende: dimmelo.
+Se ancora OFF dopo reboot: dimmi se `MiaoHID.dylib` e `miao-bb-alive.txt` ci sono.

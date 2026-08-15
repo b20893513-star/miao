@@ -81,14 +81,26 @@ jobs:
           tmp=$(mktemp -d)
           (cd "$tmp" && ar x "$GITHUB_WORKSPACE/$deb" && tar -xf data.tar.* 2>/dev/null || tar --lzma -xf data.tar.lzma)
           dylib=$(find "$tmp" -name 'Miao.dylib' | head -n1)
+          hid=$(find "$tmp" -name 'MiaoHID.dylib' | head -n1)
           echo "dylib=$dylib"
+          echo "hid=$hid"
+          if [ -z "$hid" ]; then
+            echo "ERROR: MiaoHID.dylib assente nel .deb"
+            find "$tmp" -type f | head -n 80
+            exit 1
+          fi
           lipo -info "$dylib"
           lipo -info "$dylib" | tee lipo.txt
+          lipo -info "$hid" | tee lipo-hid.txt
           if ! grep -q arm64e lipo.txt; then
             echo "ERROR: Miao.dylib manca lo slice arm64e — SpringBoard non carichera il tweak"
             exit 1
           fi
-          echo "OK: arm64e presente"
+          if ! grep -q arm64e lipo-hid.txt; then
+            echo "ERROR: MiaoHID.dylib manca arm64e"
+            exit 1
+          fi
+          echo "OK: arm64e presente (Miao + MiaoHID)"
 
       - name: Upload build log on failure
         if: failure()

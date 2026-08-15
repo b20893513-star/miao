@@ -4,8 +4,5 @@
 			"com.apple.springboard",
 			"com.apple.mobilesafari"
 		);
-		Executables = (
-			"backboardd"
-		);
 	};
 }

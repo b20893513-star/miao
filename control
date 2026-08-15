@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.8.1
+Version: 0.8.2
 Architecture: iphoneos-arm64
-Description: Inject backboardd via Executables filter; HID via /var/tmp.
+Description: MiaoHID.dylib separata per backboardd (no UIKit crash).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
