@@ -1,46 +1,37 @@
-# Miao 0.9.0
+# Miao 0.9.1
 
-## Fix vero
-Le costanti dei campi digitizer IOKit erano **sbagliate**: i raggi del dito e la
-pressione finivano su `AuxiliaryPressure`, `Twist` e `TiltY`. L'evento HID partiva
-malformato, quindi il tap non veniva riconosciuto come touch reale.
+## Perche' l'HID non poteva funzionare
+La calibrazione 0.9.0 ha risposto in modo definitivo: `CAL NO TOUCH`, cioe' l'evento
+HID non arrivava mai al contenuto web. Le tre strade HID sono chiuse su questo setup:
 
-Valori corretti (base = `11 << 16` = 720896):
-
-| campo | offset |
+| via | esito |
 |---|---|
-| EventMask | 7 |
-| Range | 8 |
-| Touch | 9 |
-| Pressure | 10 |
-| MajorRadius | 20 |
-| MinorRadius | 21 |
-| IsDisplayIntegrated | 25 |
+| `MiaoHID` in backboardd | la dylib non viene iniettata (`HID? backboardd OFF`) |
+| `IOHIDEventSystemClientDispatchEvent` da SpringBoard | il server HID **e'** backboardd, non noi |
+| `_enqueueHIDEvent:` in Safari | ignorato senza entitlement |
 
-Inoltre l'evento ora ricalca SimulateTouch: hand identity 1, `EventMask`/`Range`/`Touch`
-impostati sul parent dopo l'append, coordinate finger **sempre normalizzate 0..1**
-(nessun path che mandava coords assolute).
+## La via che funziona: touch UIKit dentro Safari
+Invece di iniettare hardware, sintetizziamo una `UITouch` e la consegniamo con
+`-[UIApplication sendEvent:]` **dentro il processo Safari**. Il touch entra nel
+dispatch normale di UIKit, viene hit-testato e consegnato al gesture recognizer di
+WebKit: il web process lo vede come touch reale, con `isTrusted` e user gesture
+valida. Non serve ne' HID ne' entitlement.
 
-## Calibrazione (`calib`)
-Basta indovinare la conversione viewport→schermo. Ora c'e' una sonda:
+## Tap umano
+Il sito non deve distinguere il tap da un dito:
 
-1. si registra un listener JS su `touchstart`/`click`
-2. si tappa un punto **senza link** noto
-3. si legge dove il touch e' atterrato davvero
-
-Il delta misurato viene salvato in `/var/mobile/Documents/miao-cal.plist` e applicato
-ai tap successivi. Gira automaticamente alla prima sessione.
-
-Toast:
-- `CAL ok d=dx,dy tr1` → l'HID **arriva** alla pagina, offset corretto (`tr1` = `isTrusted`)
-- `CAL NO TOUCH` → l'HID **non** raggiunge il web content: il problema e' l'injection, non le coordinate
+- punto casuale nella zona centrale della thumbnail (56% del rect), non il pixel esatto
+- durata del contatto casuale tra 55 e 130 ms
+- due micro-movimenti di 1-2 px tra down e up (un dito non sta mai fermo)
+- fasi `Began` → `Moved` → `Moved` → `Ended` su giri di runloop distinti, come un touch reale
 
 ## Toast
-- `HID worker SB ON` all'unlock
-- `HIT` / `MISS` (elementFromPoint) poi `HID-sb x,y`
-- `Video OK` se naviga
-- `Miss @x,y tr1` → il touch e' arrivato ma nel punto sbagliato
-- `Miss NO TOUCH` → il touch non e' arrivato affatto
+- `UIK x,y` → tap UIKit inviato (percorso buono)
+- `CAL ok d=dx,dy tr1` → il touch arriva alla pagina, `tr1` = `isTrusted`
+- `CAL NO TOUCH` → non arriva: leggi `miao-ack.txt` per il motivo (`uikit tap fail: ...`)
+- `HID-sb x,y` / `HID OFF` → siamo caduti nel fallback, il tap UIKit e' fallito
+- `Miss @x,y tr1` → touch arrivato ma nel punto sbagliato
+- `Video OK` → navigazione avvenuta
 
 ## Install
 Userspace Reboot dopo update.

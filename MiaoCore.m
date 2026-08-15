@@ -8,6 +8,7 @@
 #import "MiaoCore.h"
 #import "TouchSimSafari.h"
 #import "TouchSimBB.h"
+#import "TouchSimUIKit.h"
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
@@ -256,23 +257,27 @@ static NSString *MiaoHidWho(void) {
 	return MiaoIsSB() ? @"sb" : @"on";
 }
 
-/// getBoundingClientRect (viewport WK) → punti finestra Safari.
+/**
+ getBoundingClientRect (viewport WK) → punti FINESTRA Safari.
+ Il tap UIKit vuole coordinate finestra; solo il fallback HID vuole lo schermo.
+ */
 static CGPoint MiaoViewportToWindow(CGPoint vp) {
 	UIView *wk = MiaoBestWebView();
 	if (!wk) return vp;
-	// Preferisci la finestra del WK (non un'altra keyWindow)
 	UIWindow *win = wk.window;
-	CGPoint p = [wk convertPoint:vp toView:win];
-	if (win) {
-		// in coordinate schermo/scene
-		p = [win convertPoint:p toWindow:nil];
-	} else {
-		p = [wk convertPoint:vp toView:nil];
-	}
-	CGRect fr = [wk convertRect:wk.bounds toView:nil];
-	MiaoLog([NSString stringWithFormat:@"wkframe=%.0f,%.0f %.0fx%.0f vp=%.0f,%.0f -> scr=%.0f,%.0f",
+	CGPoint p = win ? [wk convertPoint:vp toView:win] : [wk convertPoint:vp toView:nil];
+	CGRect fr = win ? [wk convertRect:wk.bounds toView:win] : wk.bounds;
+	MiaoLog([NSString stringWithFormat:@"wkframe=%.0f,%.0f %.0fx%.0f vp=%.0f,%.0f -> win=%.0f,%.0f",
 		fr.origin.x, fr.origin.y, fr.size.width, fr.size.height, vp.x, vp.y, p.x, p.y]);
 	return p;
+}
+
+/// Punti finestra → schermo (serve solo all'HID worker).
+static CGPoint MiaoWindowToScreen(CGPoint p) {
+	UIView *wk = MiaoBestWebView();
+	UIWindow *win = wk.window;
+	if (!win) return p;
+	return [win convertPoint:p toWindow:nil];
 }
 
 /// Chiede HID (coords schermo → normalizzate). Scrive tmp + Documents (Safari legge entrambi).
@@ -308,15 +313,31 @@ static void MiaoRequestHidTapScreen(CGPoint pt) {
 		pt.x, pt.y, nx, ny, MiaoHidAlive() ? 1 : 0, MiaoHidWho()]);
 }
 
-/// `pt` gia' in coordinate schermo.
+/**
+ `pt` in coordinate finestra (in Safari a schermo pieno coincidono con lo schermo).
+
+ Ordine: tap UIKit dentro Safari (unico che raggiunge davvero WebKit), poi HID
+ come fallback. L'HID resta perche' serve fuori da Safari, ma da SpringBoard non
+ arriva al web content: il server HID e' backboardd, non noi.
+ */
 static BOOL MiaoTrustedTapScreen(CGPoint pt, NSString *label) {
 	CGRect b = UIScreen.mainScreen.bounds;
 	if (b.size.width < 1) b = CGRectMake(0, 0, 414, 896);
 	pt.x = MAX(2, MIN(b.size.width - 2, pt.x));
 	pt.y = MAX(2, MIN(b.size.height - 2, pt.y));
-	MiaoLog([NSString stringWithFormat:@"tapScreen %@ %.0f,%.0f", label ?: @"", pt.x, pt.y]);
+	MiaoLog([NSString stringWithFormat:@"tap %@ win=%.0f,%.0f", label ?: @"", pt.x, pt.y]);
 
-	MiaoRequestHidTapScreen(pt);
+	if (MiaoIsSafari()) {
+		NSString *why = nil;
+		if (MiaoUIKitHumanTap(pt, &why)) {
+			MiaoLog([NSString stringWithFormat:@"uikit tap ok (%@)", why ?: @"-"]);
+			MiaoToast([NSString stringWithFormat:@"UIK %.0f,%.0f", pt.x, pt.y]);
+			return YES;
+		}
+		MiaoAck([NSString stringWithFormat:@"uikit tap fail: %@", why ?: @"?"]);
+	}
+
+	MiaoRequestHidTapScreen(MiaoWindowToScreen(pt));
 
 	id prefer = MiaoPrefs()[@"PreferSafariEnqueue"];
 	if (prefer && [prefer boolValue] && MiaoIsSafari()) {
@@ -629,7 +650,11 @@ static void MiaoActClickVideo(void) {
 		@"}"
 		@"if(!a) a=best||as[0];"
 		@"var r=a.getBoundingClientRect();"
-		@"var x=Math.round(r.left+r.width/2), y=Math.round(r.top+r.height/2);"
+		// punto casuale nella zona centrale: un dito non centra mai il pixel esatto
+		@"var fx=0.5+(Math.random()-0.5)*0.56, fy=0.5+(Math.random()-0.5)*0.56;"
+		@"var x=Math.round(r.left+r.width*fx), y=Math.round(r.top+r.height*fy);"
+		@"x=Math.max(2,Math.min(window.innerWidth-2,x));"
+		@"y=Math.max(2,Math.min(window.innerHeight-2,y));"
 		@"var el=document.elementFromPoint(x,y);"
 		@"var hit=el&&el.closest&&el.closest('a[href*=\"/video/\"]');"
 		@"var href=a.href||'';"
@@ -1009,7 +1034,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.9.0");
+	MiaoLog(@"safari ready 0.9.1 uikit-tap");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human", @"closeextra", @"where", @"calib" ]) {
@@ -1158,8 +1183,8 @@ static void MiaoSession(void) {
 	}
 	gSessionBusy = YES;
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog(@"session 0.9.0 hid+calib");
-	MiaoToast(@"Sessione 0.9.0...");
+	MiaoLog(@"session 0.9.1 uikit-tap");
+	MiaoToast(@"Sessione 0.9.1...");
 	MiaoStep(0, MiaoCycles());
 }
 
@@ -1190,7 +1215,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.9.0 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.9.1 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 

@@ -4,11 +4,11 @@ INSTALL_TARGET_PROCESSES = SpringBoard MobileSafari backboardd
 
 include $(THEOS)/makefiles/common.mk
 
-# Miao = SB+Safari (ora anche HID worker in SB se backboardd non injecta)
-# MiaoHID = backboardd best-effort
+# Miao = SB+Safari. Il tap vero e' UIKit dentro Safari (TouchSimUIKit);
+# l'HID resta come fallback. MiaoHID = backboardd best-effort.
 TWEAK_NAME = Miao MiaoHID
 
-Miao_FILES = Tweak.x MiaoCore.m TouchSimSafari.m TouchSimBB.m
+Miao_FILES = Tweak.x MiaoCore.m TouchSimUIKit.m TouchSimSafari.m TouchSimBB.m
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation QuartzCore
 
