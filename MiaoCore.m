@@ -409,10 +409,13 @@ void MiaoStartHidWorker(void) {
 		}
 
 		if (sx < 0 && nx >= 0) {
-			// solo norm → stima schermo 414x896 (fallback)
+			CGFloat sw = [pl[@"sw"] doubleValue];
+			CGFloat sh = [pl[@"sh"] doubleValue];
+			if (sw < 100) sw = 414;
+			if (sh < 100) sh = 896;
 			if (nx <= 1.5) {
-				sx = nx * 414.0;
-				sy = ny * 896.0;
+				sx = nx * sw;
+				sy = ny * sh;
 			} else {
 				sx = nx;
 				sy = ny;

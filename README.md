@@ -1,10 +1,14 @@
-# Miao 0.8.6 (locale — non pushata)
+# Miao 0.8.6
 
-## Fix miss `HID-?` / `Miss`
-Da SpringBoard, `IOHIDEventSystemClientDispatchEvent` con coords **normalizzate** non arriva a Safari.
+## Fix
+- Tap con punti schermo + `contextId` quando possibile
+- Se non c'e' `BKHIDSystemInterface` (tipico in SpringBoard): **ClientDispatch con coords 0..1** (non assolute — bug che mandava i tap fuori schermo)
+- `MiaoHID.m` senza Logos per backboardd
 
-Ora: punti **schermo** + `CAWindowServer contextIdAtPosition` + `BKSHIDEventSetDigitizerInfo` + `BKHIDSystemInterface injectHIDEvent` (fallback ClientDispatch).
+## Toast
+- `HID worker SB ON` all'unlock
+- `HIT` / `MISS` poi `HID-sb x,y`
+- `Video OK` se naviga
 
-## Build
-Quando vuoi: push su `main` → CI, oppure `make package THEOS_PACKAGE_SCHEME=rootless` in locale.
-Non e' stato pushato / buildato da questa sessione.
+## Install
+Userspace Reboot dopo update.

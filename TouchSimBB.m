@@ -113,6 +113,41 @@ static uint32_t MiaoContextIdAtScreenPoint(CGFloat x, CGFloat y) {
 	return ((uint32_t (*)(id, SEL, CGPoint))objc_msgSend)(display, ctxSel, CGPointMake(x, y));
 }
 
+static CGSize MiaoDisplaySizePoints(void) {
+	Class wsCls = NSClassFromString(@"CAWindowServer");
+	if (wsCls) {
+		SEL serverSel = NSSelectorFromString(@"serverIfRunning");
+		if ([wsCls respondsToSelector:serverSel]) {
+			id server = ((id (*)(id, SEL))objc_msgSend)(wsCls, serverSel);
+			id display = nil;
+			if (server) {
+				SEL byName = NSSelectorFromString(@"displayWithName:");
+				if ([server respondsToSelector:byName])
+					display = ((id (*)(id, SEL, id))objc_msgSend)(server, byName, @"LCD");
+				if (!display) {
+					SEL displaysSel = NSSelectorFromString(@"displays");
+					if ([server respondsToSelector:displaysSel]) {
+						NSArray *ds = ((id (*)(id, SEL))objc_msgSend)(server, displaysSel);
+						display = ds.firstObject;
+					}
+				}
+			}
+			if (display) {
+				SEL boundsSel = NSSelectorFromString(@"bounds");
+				if ([display respondsToSelector:boundsSel]) {
+					CGRect b = ((CGRect (*)(id, SEL))objc_msgSend)(display, boundsSel);
+					CGFloat w = MIN(b.size.width, b.size.height);
+					CGFloat h = MAX(b.size.width, b.size.height);
+					// bounds a volte in pixel: riduci a points tipici
+					if (w > 600) { w /= 3.0; h /= 3.0; } // 1242→414 circa
+					if (w > 100 && h > 100) return CGSizeMake(w, h);
+				}
+			}
+		}
+	}
+	return CGSizeMake(414, 896); // iPhone 11 Pro Max fallback
+}
+
 static void MiaoSendEvent(IOHIDEventRef event, uint32_t contextId) {
 	if (!event) return;
 	MiaoNotifyUserEvent();
@@ -202,13 +237,33 @@ void MiaoPerformHumanTapScreen(CGFloat x, CGFloat y) {
 	if (x < 2) x = 2;
 	if (y < 2) y = 2;
 
-	uint32_t ctx = MiaoContextIdAtScreenPoint(x, y);
-	NSLog(@"[MiaoHID] tapScreen (%.0f,%.0f) ctx=%u bks=%d hid=%d",
-		x, y, ctx, p_BKSSetDigitizerInfo ? 1 : 0,
-		NSClassFromString(@"BKHIDSystemInterface") ? 1 : 0);
+	CGSize scr = MiaoDisplaySizePoints();
+	if (x > scr.width - 2) x = scr.width - 2;
+	if (y > scr.height - 2) y = scr.height - 2;
 
-	MiaoDispatchDigitizer((IOHIDFloat)x, (IOHIDFloat)y, YES, YES, ctx);
-	usleep(100000);
-	MiaoDispatchDigitizer((IOHIDFloat)x, (IOHIDFloat)y, NO, YES, ctx);
-	usleep(50000);
+	uint32_t ctx = MiaoContextIdAtScreenPoint(x, y);
+	BOOL haveInject = (NSClassFromString(@"BKHIDSystemInterface") != nil);
+
+	NSLog(@"[MiaoHID] tapScreen (%.0f,%.0f) scr=%.0fx%.0f ctx=%u inject=%d bks=%d",
+		x, y, scr.width, scr.height, ctx, haveInject ? 1 : 0, p_BKSSetDigitizerInfo ? 1 : 0);
+
+	// Absolute coords solo con inject nativo (backboardd). ClientDispatch vuole sempre 0..1.
+	if (haveInject) {
+		MiaoDispatchDigitizer((IOHIDFloat)x, (IOHIDFloat)y, YES, YES, ctx);
+		usleep(100000);
+		MiaoDispatchDigitizer((IOHIDFloat)x, (IOHIDFloat)y, NO, YES, ctx);
+		usleep(50000);
+	} else {
+		CGFloat nx = x / MAX(scr.width, 1);
+		CGFloat ny = y / MAX(scr.height, 1);
+		if (nx < 0.01f) nx = 0.01f;
+		if (nx > 0.99f) nx = 0.99f;
+		if (ny < 0.02f) ny = 0.02f;
+		if (ny > 0.99f) ny = 0.99f;
+		// ctx+BKS prima del dispatch puo' aiutare il routing verso Safari
+		MiaoDispatchDigitizer((IOHIDFloat)nx, (IOHIDFloat)ny, YES, NO, ctx);
+		usleep(90000);
+		MiaoDispatchDigitizer((IOHIDFloat)nx, (IOHIDFloat)ny, NO, NO, ctx);
+		usleep(40000);
+	}
 }
