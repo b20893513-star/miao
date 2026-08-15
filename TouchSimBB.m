@@ -24,11 +24,13 @@ enum {
 	kIOHIDEventFieldDigitizerMinorRadius = (kIOHIDEventTypeDigitizer << 16) | 0x0C,
 	kIOHIDEventFieldDigitizerPressure = (kIOHIDEventTypeDigitizer << 16) | 0x0E,
 };
+enum { kIOHIDEventFieldDigitizerDisplayIntegrated = 720921 };
 
 static IOHIDEventRef (*p_CreateDigitizerEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits);
 static IOHIDEventRef (*p_CreateDigitizerFingerEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits);
 static void (*p_AppendEvent)(IOHIDEventRef, IOHIDEventRef, IOOptionBits);
 static void (*p_SetFloatValue)(IOHIDEventRef, uint32_t, IOHIDFloat);
+static void (*p_SetIntegerValue)(IOHIDEventRef, uint32_t, CFIndex);
 static void (*p_SetSenderID)(IOHIDEventRef, uint64_t);
 static IOHIDEventSystemClientRef (*p_ClientCreate)(CFAllocatorRef);
 static void (*p_ClientDispatch)(IOHIDEventSystemClientRef, IOHIDEventRef);
@@ -44,6 +46,7 @@ static bool MiaoLoadIOHID(void) {
 		p_CreateDigitizerFingerEvent = (typeof(p_CreateDigitizerFingerEvent))dlsym(iokit, "IOHIDEventCreateDigitizerFingerEvent");
 		p_AppendEvent = (typeof(p_AppendEvent))dlsym(iokit, "IOHIDEventAppendEvent");
 		p_SetFloatValue = (typeof(p_SetFloatValue))dlsym(iokit, "IOHIDEventSetFloatValue");
+		p_SetIntegerValue = (typeof(p_SetIntegerValue))dlsym(iokit, "IOHIDEventSetIntegerValue");
 		p_SetSenderID = (typeof(p_SetSenderID))dlsym(iokit, "IOHIDEventSetSenderID");
 		p_ClientCreate = (typeof(p_ClientCreate))dlsym(iokit, "IOHIDEventSystemClientCreate");
 		p_ClientDispatch = (typeof(p_ClientDispatch))dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
@@ -71,6 +74,9 @@ static void MiaoDispatchDigitizer(IOHIDFloat nx, IOHIDFloat ny, BOOL touching, I
 		1, 1, mask, 0, nx, ny, 0, 0, 0, touching, touching, 0);
 	if (!parent) return;
 
+	if (p_SetIntegerValue)
+		p_SetIntegerValue(parent, (uint32_t)kIOHIDEventFieldDigitizerDisplayIntegrated, 1);
+
 	IOHIDEventRef child = p_CreateDigitizerFingerEvent(
 		kCFAllocatorDefault, time, 1, 1, mask, nx, ny, 0, 0, 0, touching, touching, 0);
 	if (!child) {
@@ -85,7 +91,7 @@ static void MiaoDispatchDigitizer(IOHIDFloat nx, IOHIDFloat ny, BOOL touching, I
 	}
 	p_AppendEvent(parent, child, 0);
 	CFRelease(child);
-	if (p_SetSenderID) p_SetSenderID(parent, 0x800000000000027FULL);
+	if (p_SetSenderID) p_SetSenderID(parent, 0x000000010000027FULL);
 	IOHIDEventSystemClientRef client = MiaoHIDClient();
 	if (client) p_ClientDispatch(client, parent);
 	CFRelease(parent);

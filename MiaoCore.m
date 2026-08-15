@@ -5,6 +5,7 @@
 #import <notify.h>
 #import <unistd.h>
 #import "MiaoCore.h"
+#import "TouchSimSafari.h"
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
@@ -229,11 +230,18 @@ static BOOL MiaoBbAlive(void) {
 	return NO;
 }
 
-/// Safari scrive coords NORMALIZZATE; MiaoHID in backboardd esegue il gesto (no UIKit la').
-static void MiaoRequestHidTap(CGPoint pt) {
+/// getBoundingClientRect (viewport WK) → punti finestra Safari.
+static CGPoint MiaoViewportToWindow(CGPoint vp) {
+	UIView *wk = MiaoBestWebView();
+	if (!wk) return vp;
+	return [wk convertPoint:vp toView:nil];
+}
+
+/// Chiede HID a backboardd (coords GIA' schermo/finestra → normalizzate).
+static void MiaoRequestHidTapScreen(CGPoint pt) {
 	id dis = MiaoPrefs()[@"DisableBackboardHID"];
 	if (dis && [dis boolValue]) {
-		MiaoLog(@"HID disabled by prefs");
+		MiaoLog(@"HID bb disabled by prefs");
 		return;
 	}
 	CGRect b = UIScreen.mainScreen.bounds;
@@ -252,9 +260,46 @@ static void MiaoRequestHidTap(CGPoint pt) {
 		@"ts": @([[NSDate date] timeIntervalSince1970])
 	} writeToFile:kHidPlist atomically:YES];
 	notify_post("com.noxlab.miao.hidtap");
+	MiaoLog([NSString stringWithFormat:@"hid-bb-req pt=%.0f,%.0f norm=%.3f,%.3f bb=%d", pt.x, pt.y, nx, ny, MiaoBbAlive() ? 1 : 0]);
+}
+
+/// `pt` gia' in coordinate finestra/schermo.
+static BOOL MiaoTrustedTapScreen(CGPoint pt, NSString *label) {
+	CGRect b = UIScreen.mainScreen.bounds;
+	if (b.size.width < 1) b = CGRectMake(0, 0, 414, 896);
+	pt.x = MAX(2, MIN(b.size.width - 2, pt.x));
+	pt.y = MAX(2, MIN(b.size.height - 2, pt.y));
+	MiaoLog([NSString stringWithFormat:@"tapScreen %@ %.0f,%.0f", label ?: @"", pt.x, pt.y]);
+
+	BOOL safariOk = NO;
+	if (MiaoIsSafari()) {
+		safariOk = MiaoSafariTrustedTapWindow(pt.x, pt.y);
+	}
+	MiaoRequestHidTapScreen(pt);
+
 	BOOL bb = MiaoBbAlive();
-	MiaoLog([NSString stringWithFormat:@"hid-req pt=%.0f,%.0f norm=%.3f,%.3f bb=%d", pt.x, pt.y, nx, ny, bb ? 1 : 0]);
-	MiaoToast(bb ? [NSString stringWithFormat:@"HID %.0f,%.0f", pt.x, pt.y] : @"HID? backboardd OFF");
+	if (safariOk) {
+		MiaoToast([NSString stringWithFormat:@"TapOK %.0f,%.0f", pt.x, pt.y]);
+	} else if (bb) {
+		MiaoToast([NSString stringWithFormat:@"HID-bb %.0f,%.0f", pt.x, pt.y]);
+	} else {
+		MiaoToast(@"Tap? Safari+bb fail");
+	}
+	return safariOk || bb;
+}
+
+/// Path principale ads: tap trusted Safari (BKS enqueue) + backup backboardd.
+/// `vp` = coordinate viewport DOM (getBoundingClientRect).
+static BOOL MiaoTrustedTapViewport(CGPoint vp, NSString *label) {
+	if (vp.x < 1 && vp.y < 1) return NO;
+	CGPoint win = MiaoViewportToWindow(vp);
+	MiaoLog([NSString stringWithFormat:@"tap %@ vp=%.0f,%.0f win=%.0f,%.0f", label ?: @"", vp.x, vp.y, win.x, win.y]);
+	return MiaoTrustedTapScreen(win, label);
+}
+
+static void MiaoRequestHidTap(CGPoint pt) {
+	// usato da Skip zona / player: coords schermo
+	MiaoTrustedTapScreen(pt, @"screen");
 }
 
 static void MiaoHumanTapAt(CGPoint pt, void (^done)(void)) {
@@ -262,13 +307,12 @@ static void MiaoHumanTapAt(CGPoint pt, void (^done)(void)) {
 		if (done) done();
 		return;
 	}
-	MiaoRequestHidTap(pt);
+	MiaoTrustedTapScreen(pt, @"human");
 	if (done) {
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), done);
 	}
 }
 
-// HID gira in MiaoHID.dylib (backboardd). Qui stub per API legacy.
 void MiaoStartBackboardd(void) {
 	MiaoLog(@"MiaoStartBackboardd noop (use MiaoHID.dylib)");
 }
@@ -283,8 +327,9 @@ static void MiaoActReady(void (^done)(BOOL ok)) {
 }
 
 static void MiaoActClickVideo(void) {
-	MiaoToast(@"Thumb HID...");
-	// 1) coordinate DOM  2) tap HID via backboardd (trusted)  3) JS solo se dopo 2.8s ancora in home
+	MiaoToast(@"Thumb tap...");
+	// Exo popunder (method 1) apre solo su click TRUSTED nel document.
+	// location.assign apre /video/ MA non gli ads → vietato di default.
 	NSString *js =
 		@"(function(){"
 		@"var as=[].slice.call(document.querySelectorAll('a[href*=\"/video/\"]'));"
@@ -309,33 +354,55 @@ static void MiaoActClickVideo(void) {
 			return;
 		}
 		NSArray *parts = [result componentsSeparatedByString:@"|"];
-		CGPoint pt = MiaoParseXY(parts.firstObject);
+		CGPoint vp = MiaoParseXY(parts.firstObject);
 		NSString *href = parts.count > 1 ? parts[1] : nil;
 		MiaoAck([NSString stringWithFormat:@"thumb %@", result]);
-		MiaoRequestHidTap(pt);
-		// secondo tap dopo breve pause (a volte serve)
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			MiaoRequestHidTap(pt);
+
+		void (^checkNav)(NSString *tag) = ^(NSString *tag) {
+			MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *path) {
+				if (path && [path containsString:@"/video/"]) {
+					MiaoAck([NSString stringWithFormat:@"%@ navigated OK", tag]);
+					MiaoToast(@"Video OK (tap)");
+					return;
+				}
+				MiaoAck([NSString stringWithFormat:@"%@ still home", tag]);
+			});
+		};
+
+		MiaoTrustedTapViewport(vp, @"thumb1");
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.85 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			MiaoTrustedTapViewport(vp, @"thumb2");
 		});
-		// fallback JS solo se HID non ha navigato
-		if (href.length) {
-			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-				MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *path) {
-					if (path && [path containsString:@"/video/"]) {
-						MiaoAck(@"HID navigated OK");
-						MiaoToast(@"Video OK (HID?)");
-						return;
-					}
-					MiaoAck(@"HID miss -> JS nav");
-					MiaoToast(@"Fallback JS video");
-					NSString *go = [NSString stringWithFormat:
-						@"(function(){location.assign('%@');return 'JS';})()",
-						[[href stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"]
-							stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]];
-					MiaoJS(go, ^(NSString *r) { MiaoAck(r ?: @"js"); });
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			checkNav(@"after-tap");
+		});
+
+		// Retry + JS fallback SOLO se prefs AllowJSVideoFallback=1 (rompe gli ads)
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *path) {
+				if (path && [path containsString:@"/video/"]) return;
+				MiaoTrustedTapViewport(vp, @"thumb-retry");
+				id allow = MiaoPrefs()[@"AllowJSVideoFallback"];
+				if (!(allow && [allow boolValue])) {
+					MiaoAck(@"tap miss — no JS fallback (ads)");
+					MiaoToast(@"Tap miss (no JS)");
+					return;
+				}
+				if (!href.length) return;
+				dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+					MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *p2) {
+						if (p2 && [p2 containsString:@"/video/"]) return;
+						MiaoAck(@"JS fallback — popunder NON aprira");
+						MiaoToast(@"JS video (NO ads)");
+						NSString *go = [NSString stringWithFormat:
+							@"(function(){location.assign('%@');return 'JS';})()",
+							[[href stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"]
+								stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]];
+						MiaoJS(go, ^(NSString *r) { MiaoAck(r ?: @"js"); });
+					});
 				});
 			});
-		}
+		});
 	});
 }
 
@@ -385,21 +452,21 @@ static void MiaoActSkip(void) {
 			MiaoAck(@"skip NONE");
 			CGRect b = UIScreen.mainScreen.bounds;
 			CGFloat y = MIN(90 + b.size.width * 9.0 / 16.0 + 20, b.size.height * 0.62);
-			MiaoRequestHidTap(CGPointMake(b.size.width * 0.82, y));
-			MiaoToast(@"Skip HID zona");
+			MiaoTrustedTapScreen(CGPointMake(b.size.width * 0.82, y), @"skip-zona");
+			MiaoToast(@"Skip zona");
 			return;
 		}
 		NSArray *parts = [result componentsSeparatedByString:@"|"];
 		if (parts.count >= 2) {
-			CGPoint pt = MiaoParseXY(parts[1]);
-			if (pt.x > 1) MiaoRequestHidTap(pt);
+			CGPoint vp = MiaoParseXY(parts[1]);
+			if (vp.x > 1) MiaoTrustedTapViewport(vp, @"skip");
 		}
 		MiaoAck([NSString stringWithFormat:@"skip %@", result]);
-		MiaoToast(@"Skip OK+HID");
+		MiaoToast(@"Skip OK+tap");
 	});
 }
 
-/// Click ads: CTA preroll, learn more, exo real-href, area player ads
+/// Click ads: CTA preroll, learn more, exo real-href — PRIORITA' tap trusted (coords), JS solo info
 static void MiaoActClickAd(void) {
 	MiaoToast(@"Click ads...");
 	NSString *js =
@@ -409,13 +476,12 @@ static void MiaoActClickAd(void) {
 		@"  var r=el.getBoundingClientRect();"
 		@"  return r.width>12&&r.height>12&&r.bottom>0&&r.top<window.innerHeight;"
 		@"}"
-		@"function go(el,tag){"
+		@"function pack(el,tag){"
 		@"  if(!el||!visible(el)) return null;"
 		@"  try{el.scrollIntoView({block:'center'});}catch(e){}"
-		@"  try{el.click();}catch(e){}"
-		@"  try{el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}"
+		@"  var r=el.getBoundingClientRect();"
 		@"  var h=el.getAttribute('real-href')||el.href||el.getAttribute('href')||'';"
-		@"  return tag+'|'+(h||((el.innerText||'').trim())).toString().slice(0,80);"
+		@"  return tag+'|'+Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2)+'|'+(h||'').toString().slice(0,80);"
 		@"}"
 		@"var sels=["
 		@"  'a.exo-native-widget-item[real-href]',"
@@ -429,8 +495,7 @@ static void MiaoActClickAd(void) {
 		@"  'a[href*=\"realsrv\"]',"
 		@"  '.ad-slot a[href]',"
 		@"  '[class*=\"vast\"] a[href]',"
-		@"  '[class*=\"preroll\"] a[href]',"
-		@"  'a[target=\"_blank\"]'"
+		@"  '[class*=\"preroll\"] a[href]'"
 		@"];"
 		@"for(var s=0;s<sels.length;s++){"
 		@"  var nodes=[].slice.call(document.querySelectorAll(sels[s]));"
@@ -440,7 +505,7 @@ static void MiaoActClickAd(void) {
 		@"    var t=((el.innerText||'')+'').toLowerCase();"
 		@"    if(/noxreel\\.uk/.test(h)&&!/click|out|go|redirect/.test(h)) continue;"
 		@"    if(/skip|salta/.test(t)) continue;"
-		@"    var r=go(el,'AD');"
+		@"    var r=pack(el,'AD');"
 		@"    if(r) return r;"
 		@"  }"
 		@"}"
@@ -448,32 +513,14 @@ static void MiaoActClickAd(void) {
 		@"var btns=[].slice.call(document.querySelectorAll('a,button,[role=button]'));"
 		@"for(var j=0;j<btns.length;j++){"
 		@"  if(ctaRe.test((btns[j].innerText||'')+'')){"
-		@"    var r2=go(btns[j],'CTA');"
+		@"    var r2=pack(btns[j],'CTA');"
 		@"    if(r2) return r2;"
 		@"  }"
 		@"}"
-		@"// area creativo HTML preroll (div sopra Skip)"
 		@"var player=document.querySelector('[data-nox-preroll],iframe[data-nox-preroll],iframe[title=\"preroll\"]');"
-		@"if(player){var r3=go(player,'PREROLL'); if(r3) return r3;}"
+		@"if(player){var r3=pack(player,'PREROLL'); if(r3) return r3;}"
 		@"var box=document.querySelector('.relative.aspect-video, [class*=\"aspect-video\"]');"
-		@"if(box){"
-		@"  var mid=box.querySelector('a,button,div');"
-		@"  if(mid&&!/skip|salta/i.test((mid.innerText||'')+'')){"
-		@"    var r4=go(mid,'PLAYER');"
-		@"    if(r4) return r4;"
-		@"  }"
-		@"  try{box.click(); return 'PLAYER-BOX';}catch(e){}"
-		@"}"
-		@"// iframe same-origin ads"
-		@"var ifr=document.querySelectorAll('iframe');"
-		@"for(var k=0;k<ifr.length;k++){"
-		@"  try{"
-		@"    var doc=ifr[k].contentDocument||(ifr[k].contentWindow&&ifr[k].contentWindow.document);"
-		@"    if(!doc) continue;"
-		@"    var a=doc.querySelector('a[href],button,[real-href]');"
-		@"    if(a){a.click(); return 'IFRAME-AD|'+(a.href||a.getAttribute('real-href')||'').toString().slice(0,60);}"
-		@"  }catch(e){}"
-		@"}"
+		@"if(box){var r4=pack(box,'PLAYER'); if(r4) return r4;}"
 		@"return 'NONE';"
 		@"})()";
 
@@ -481,13 +528,20 @@ static void MiaoActClickAd(void) {
 		if (!result || [result hasPrefix:@"NONE"]) {
 			MiaoAck(@"clickad NONE");
 			CGRect b = UIScreen.mainScreen.bounds;
-			// tap centro player (spesso creativo ads)
-			MiaoHumanTapAt(CGPointMake(b.size.width * 0.5, MIN(200, b.size.height * 0.28)), ^{});
-			MiaoToast(@"Ads miss -> HID player");
+			MiaoTrustedTapScreen(CGPointMake(b.size.width * 0.5, MIN(200, b.size.height * 0.28)), @"ads-player");
+			MiaoToast(@"Ads miss -> player");
 			return;
 		}
+		NSArray *parts = [result componentsSeparatedByString:@"|"];
+		NSString *tag = parts.firstObject ?: @"AD";
+		CGPoint vp = parts.count >= 2 ? MiaoParseXY(parts[1]) : CGPointZero;
 		MiaoAck([NSString stringWithFormat:@"clickad %@", result]);
-		MiaoToast([NSString stringWithFormat:@"Ads %@", [[result componentsSeparatedByString:@"|"] firstObject]]);
+		if (vp.x > 1) {
+			MiaoTrustedTapViewport(vp, [NSString stringWithFormat:@"ad-%@", tag]);
+			MiaoToast([NSString stringWithFormat:@"Ads tap %@", tag]);
+		} else {
+			MiaoToast([NSString stringWithFormat:@"Ads %@", tag]);
+		}
 	});
 }
 
@@ -665,11 +719,9 @@ void MiaoStartSafari(void) {
 
 /**
  1 HOME
- 2 JS: location.assign(/video/...)  — HID non apre i link su questo device
- 3 Backup: SpringBoard openURL stesso video
- 4 Skip via button.click() JS
- 5 seek/scroll
- 6 close ads best-effort
+ 2 Tap trusted sul thumb (BKS+bb) — unico modo per Exo popunder
+ 3 Niente location.assign di default (rompe ads)
+ 4 Skip / clickad / human
  */
 void MiaoAfter(NSTimeInterval sec, void (^block)(void)) {
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(sec * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
@@ -733,16 +785,21 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 
 		MiaoAfter(3.5, ^{ MiaoSendCmd(@"ping"); });
 
-		// JS apre /video/ (funziona; HID no)
+		// Tap thumb (trusted) — popunder Exo richiede gesture reale
 		MiaoAfter(7.0, ^{
-			MiaoToast(@"Click/nav video...");
+			MiaoToast(@"Click thumb...");
 			MiaoSendCmd(@"clickvideo");
 		});
 
-		// Backup openURL solo tardi (dopo chance HID/popunder)
-		MiaoAfter(14.5, ^{
-			MiaoToast(@"Backup openURL?");
-			MiaoOpenURL(videoURL);
+		// Backup openURL solo se AllowJSVideoFallback=1 (altrimenti rovina il test ads)
+		MiaoAfter(15.0, ^{
+			id allow = MiaoPrefs()[@"AllowJSVideoFallback"];
+			if (allow && [allow boolValue]) {
+				MiaoToast(@"Backup openURL");
+				MiaoOpenURL(videoURL);
+			} else {
+				MiaoLog(@"skip backup openURL (keep ads path)");
+			}
 		});
 
 		MiaoAfter(13.0, ^{ MiaoSendCmd(@"closeads"); });
@@ -818,7 +875,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.2 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.3 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 

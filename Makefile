@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 # Due dylib: Miao (SB+Safari, UIKit) e MiaoHID (solo backboardd, NO UIKit)
 TWEAK_NAME = Miao MiaoHID
 
-Miao_FILES = Tweak.x MiaoCore.m
+Miao_FILES = Tweak.x MiaoCore.m TouchSimSafari.m
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation
 
