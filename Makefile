@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = Miao
 
 # HID solo chiamato da MobileSafari (coordinate dal DOM). Non da SpringBoard.
-Miao_FILES = Tweak.x TouchSim.mm
+Miao_FILES = Tweak.x MiaoCore.m TouchSim.m
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation
 

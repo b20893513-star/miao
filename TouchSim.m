@@ -1,4 +1,4 @@
-#import "TouchSim.h"
+﻿#import "TouchSim.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -115,7 +115,7 @@ static void MiaoNorm(CGFloat x, CGFloat y, IOHIDFloat *nx, IOHIDFloat *ny) {
 	*ny = MAX(0.04f, MIN(0.98f, *ny));
 }
 
-extern "C" void MiaoPerformTapWithDuration(CGFloat x, CGFloat y, NSTimeInterval duration) {
+void MiaoPerformTapWithDuration(CGFloat x, CGFloat y, NSTimeInterval duration) {
 	IOHIDFloat nx, ny;
 	MiaoNorm(x, y, &nx, &ny);
 	NSLog(@"[Miao] tap norm=(%.3f, %.3f) %@", nx, ny, NSBundle.mainBundle.bundleIdentifier ?: @"?");
@@ -125,12 +125,12 @@ extern "C" void MiaoPerformTapWithDuration(CGFloat x, CGFloat y, NSTimeInterval 
 	MiaoDispatchDigitizer(nx, ny, NO, 0.f);
 }
 
-extern "C" void MiaoPerformTap(CGFloat x, CGFloat y) {
+void MiaoPerformTap(CGFloat x, CGFloat y) {
 	MiaoPerformTapWithDuration(x, y, 0.08);
 }
 
 /// Gesto umano: avvicinamento, down, 2 micro-move, up con pressione variabile.
-extern "C" void MiaoPerformHumanTap(CGFloat x, CGFloat y) {
+void MiaoPerformHumanTap(CGFloat x, CGFloat y) {
 	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
 	if (![bid isEqualToString:@"com.apple.mobilesafari"]) {
 		NSLog(@"[Miao] HumanTap RIFIUTATO fuori Safari (%@)", bid);
@@ -140,7 +140,7 @@ extern "C" void MiaoPerformHumanTap(CGFloat x, CGFloat y) {
 	CGRect b = UIScreen.mainScreen.bounds;
 	if (b.size.width < 1) b = CGRectMake(0, 0, 414, 896);
 
-	// Jitter naturale ±2–5 pt
+	// Jitter naturale ┬▒2ÔÇô5 pt
 	CGFloat jx = (CGFloat)(arc4random_uniform(7)) - 3.f;
 	CGFloat jy = (CGFloat)(arc4random_uniform(7)) - 3.f;
 	CGFloat tx = MAX(10, MIN(b.size.width - 10, x + jx));
@@ -159,7 +159,7 @@ extern "C" void MiaoPerformHumanTap(CGFloat x, CGFloat y) {
 	MiaoDispatchDigitizer(nx0, ny0, YES, 0.25f);
 	usleep(18000 + arc4random_uniform(12000));
 
-	// Press più forte sul target
+	// Press pi├╣ forte sul target
 	MiaoDispatchDigitizer(nx, ny, YES, 0.75f);
 	usleep(35000 + arc4random_uniform(25000));
 
