@@ -5,6 +5,7 @@
 #import <dlfcn.h>
 #import <mach/mach_time.h>
 #import <unistd.h>
+#import <stdlib.h>
 
 typedef float IOHIDFloat;
 typedef int boolean_t;
@@ -30,7 +31,6 @@ static IOHIDEventRef (*p_CreateDigitizerEvent)(CFAllocatorRef, uint64_t, uint32_
 static IOHIDEventRef (*p_CreateDigitizerFingerEvent)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, IOHIDFloat, boolean_t, boolean_t, IOOptionBits);
 static void (*p_AppendEvent)(IOHIDEventRef, IOHIDEventRef, IOOptionBits);
 static void (*p_SetFloatValue)(IOHIDEventRef, uint32_t, IOHIDFloat);
-static void (*p_SetIntegerValue)(IOHIDEventRef, uint32_t, long long);
 static void (*p_SetSenderID)(IOHIDEventRef, uint64_t);
 static IOHIDEventSystemClientRef (*p_ClientCreate)(CFAllocatorRef);
 static void (*p_ClientDispatch)(IOHIDEventSystemClientRef, IOHIDEventRef);
@@ -45,7 +45,6 @@ static bool MiaoLoadIOHID(void) {
 		p_CreateDigitizerFingerEvent = (typeof(p_CreateDigitizerFingerEvent))dlsym(iokit, "IOHIDEventCreateDigitizerFingerEvent");
 		p_AppendEvent = (typeof(p_AppendEvent))dlsym(iokit, "IOHIDEventAppendEvent");
 		p_SetFloatValue = (typeof(p_SetFloatValue))dlsym(iokit, "IOHIDEventSetFloatValue");
-		p_SetIntegerValue = (typeof(p_SetIntegerValue))dlsym(iokit, "IOHIDEventSetIntegerValue");
 		p_SetSenderID = (typeof(p_SetSenderID))dlsym(iokit, "IOHIDEventSetSenderID");
 		p_ClientCreate = (typeof(p_ClientCreate))dlsym(iokit, "IOHIDEventSystemClientCreate");
 		p_ClientDispatch = (typeof(p_ClientDispatch))dlsym(iokit, "IOHIDEventSystemClientDispatchEvent");
@@ -103,20 +102,6 @@ static void MiaoDispatchDigitizer(IOHIDFloat nx, IOHIDFloat ny, BOOL touching, I
 
 	IOHIDEventSystemClientRef client = MiaoHIDClient();
 	if (client) p_ClientDispatch(client, parent);
-
-	// Solo in MobileSafari: prova anche enqueue UIApplication (stesso processo del WebView)
-	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
-	if ([bid isEqualToString:@"com.apple.mobilesafari"]) {
-		id app = [UIApplication sharedApplication];
-		SEL sel = NSSelectorFromString(@"_enqueueHIDEvent:");
-		if (app && [app respondsToSelector:sel]) {
-			@try {
-				((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(app, sel, parent);
-			} @catch (NSException *ex) {
-				(void)ex;
-			}
-		}
-	}
 
 	CFRelease(parent);
 }

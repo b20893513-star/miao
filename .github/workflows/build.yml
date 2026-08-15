@@ -62,7 +62,16 @@ jobs:
           GMAKE="$(brew --prefix make)/libexec/gnubin/make"
           set -o pipefail
           echo "ARCHS in Makefile:"; grep ARCHS Makefile
+          set +e
           "$GMAKE" clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "===== BUILD ERRORS (tail) ====="
+            tail -n 80 build.log || true
+            grep -E "error:|Error:|fatal|undefined" build.log | tail -n 40 || true
+            exit "$rc"
+          fi
           ls -la packages/
           # Estrai dylib e verifica FAT arm64e (obbligatorio per SpringBoard A12+)
           deb=$(ls packages/*.deb | head -n1)

@@ -219,7 +219,7 @@ static void MiaoHumanTapAt(CGPoint pt, void (^done)(void)) {
 	pt.y = MAX(55, MIN(b.size.height - 12, pt.y));
 	MiaoToast([NSString stringWithFormat:@"Dito %.0f,%.0f", pt.x, pt.y]);
 	MiaoLog([NSString stringWithFormat:@"humanTap %.0f,%.0f", pt.x, pt.y]);
-	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		MiaoPerformHumanTap(pt.x, pt.y);
 		dispatch_async(dispatch_get_main_queue(), ^{
 			if (done) done();
@@ -406,7 +406,7 @@ static void MiaoHandle(NSString *cmd) {
 	cmd = [[cmd lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 	if (!cmd.length) return;
 	MiaoLog([NSString stringWithFormat:@"handle %@", cmd]);
-	MiaoToast([NSString stringWithFormat:@"▸ %@", cmd]);
+		MiaoToast([NSString stringWithFormat:@"> %@", cmd]);
 
 	if ([cmd isEqualToString:@"ping"]) {
 		MiaoAck(@"pong");
@@ -570,7 +570,7 @@ static void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.6 — 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.6 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 

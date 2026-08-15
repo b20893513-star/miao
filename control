@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.6.0
+Version: 0.6.1
 Architecture: iphoneos-arm64
-Description: Human HID tap (down/move/up) in Safari only — trusted-like gesture.
+Description: Human HID tap (down/move/up) in Safari only.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
