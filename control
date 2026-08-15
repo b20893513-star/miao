@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.6.4
+Version: 0.7.0
 Architecture: iphoneos-arm64
-Description: Human HID taps (Safari). Repo republish.
+Description: Open video via JS nav + Skip click (HID failed on device).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

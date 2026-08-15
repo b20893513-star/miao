@@ -1,26 +1,18 @@
-# Miao 0.6 — tap stile dito
+# Miao 0.7
 
-## Obiettivo
-I tap devono avvicinarsi a un **tocco umano** (IOHID digitizer con down → micro-move → up), **solo in Safari**, coordinate dal DOM del thumb/Skip.
+## Realta' sul device
+I tap HID **non aprono** i link in Safari/WKWebView (solo lo scroll JS funzionava).
 
-## Flusso (3× Volume)
-1. HOME noxreel + attesa load  
-2. **Gesto dito** sul thumb `/video/`  
-3. Chiude schede non-noxreel (se ci sono)  
-4. ~10s → gesto dito su **Skip**  
+## Cosa fa 0.7
+1. HOME  
+2. **JS** `location.assign(/video/...)` (+ tentativo click)  
+3. **Backup** `openURL` dello stesso video da SpringBoard  
+4. **Skip** con `button.click()` JS (non HID)  
 5. Seek +10 + scroll  
-6. Chiude extra  
+6. Chiudi schede ads (best effort)  
 
-Niente `element.click()` per aprire il video (quello non è trusted).
+I popunder Exo (scheda ads al tap) restano difficili senza dito reale: qui almeno **entri nel video e skippi**.
 
-## Toast utili
-- `Miao dito ON` / `Safari OK` → Safari ha il tweak  
-- `Dito x,y` → HID in corso  
-- `Ads chiuse N`  
-
-## Log
-`/var/mobile/Documents/miao-loaded.txt`  
-`/var/mobile/Documents/miao-ack.txt`
-
-## Nota
-Se lo schermo lampeggia/nero: Userspace Reboot e segnala — HID e' solo in Safari, non da SpringBoard.
+## Install
+Sileo refresh → Miao **0.7.0**  
+oppure https://b20893513-star.github.io/miao/miao-latest.deb
