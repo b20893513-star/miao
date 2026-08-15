@@ -124,7 +124,12 @@ def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:
     # touch .nojekyll for GitHub Pages
     (repo_root / ".nojekyll").write_text("", encoding="ascii")
 
-    ver = _version_key(control)
+    ver_str = "0"
+    for line in control.splitlines():
+        if line.startswith("Version:"):
+            ver_str = line.split(":", 1)[1].strip()
+            break
+
     index = f"""<!DOCTYPE html>
 <html lang="it">
 <head>
@@ -139,7 +144,7 @@ def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:
   </style>
 </head>
 <body>
-  <h1>Miao {ver}</h1>
+  <h1>Miao {ver_str}</h1>
   <div class="box">
     <p><b>Se Sileo da errore sulla sorgente:</b> non usarla. Installa il deb qui sotto con Filza.</p>
     <a class="btn" href="miao-latest.deb">Scarica miao-latest.deb</a>
@@ -155,7 +160,7 @@ def build_repo(repo_root: Path, deb_glob: str = "debs/*.deb") -> None:
     ak = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL9JlrtHJ8hZHmO3vV9OiiHmdS3LFoEpUXibCyyxvMNe miao-ci\n"
     (repo_root / "authorized_keys").write_text(ak, encoding="ascii")
 
-    print(f"Repo OK: latest={latest.name} version={ver}")
+    print(f"Repo OK: latest={latest.name} version={ver_str}")
 
 
 if __name__ == "__main__":
