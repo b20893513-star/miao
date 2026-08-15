@@ -273,36 +273,143 @@ static void MiaoActClickVideo(void) {
 }
 
 static void MiaoActSkip(void) {
-	MiaoToast(@"Skip ads...");
+	MiaoToast(@"Skip...");
+	// Skip HTML e' disabled finche' countdown > 1s. Forziamo enable + click.
+	// VAST Skip spesso e' dentro iframe same-origin /x/pr
 	NSString *js =
 		@"(function(){"
-		@"var btns=[].slice.call(document.querySelectorAll('button,a,[role=button]'));"
-		@"var b=btns.find(function(x){"
-		@"  var t=(x.innerText||x.textContent||'').trim();"
-		@"  if(!/skip|salta/i.test(t)) return false;"
-		@"  if(x.disabled) return false;"
-		@"  var r=x.getBoundingClientRect();"
-		@"  return r.width>20&&r.height>10;"
-		@"});"
-		@"if(!b){"
-		@"  b=btns.find(function(x){return /skip|salta/i.test((x.innerText||'')+'');});"
+		@"function txt(el){return ((el&& (el.innerText||el.textContent))||'').trim();}"
+		@"function isSkip(el){return /skip|salta|chiudi\\s*ad|close\\s*ad/i.test(txt(el));}"
+		@"function tryClick(el){"
+		@"  if(!el) return false;"
+		@"  try{el.disabled=false;el.removeAttribute('disabled');}catch(e){}"
+		@"  try{el.click();}catch(e){}"
+		@"  try{el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}"
+		@"  return true;"
 		@"}"
-		@"if(!b) return 'NONE';"
-		@"b.click();"
-		@"return 'SKIP|'+(b.innerText||'').trim().slice(0,24);"
+		@"function scan(root){"
+		@"  if(!root||!root.querySelectorAll) return null;"
+		@"  var nodes=[].slice.call(root.querySelectorAll('button,a,[role=button],div,span'));"
+		@"  var hit=nodes.find(function(x){return isSkip(x);});"
+		@"  return hit||null;"
+		@"}"
+		@"var b=scan(document);"
+		@"if(b&&tryClick(b)) return 'SKIP|'+txt(b).slice(0,28);"
+		@"var ifr=document.querySelectorAll('iframe');"
+		@"for(var i=0;i<ifr.length;i++){"
+		@"  try{"
+		@"    var doc=ifr[i].contentDocument||(ifr[i].contentWindow&&ifr[i].contentWindow.document);"
+		@"    var ib=scan(doc);"
+		@"    if(ib&&tryClick(ib)) return 'SKIP-IFRAME|'+txt(ib).slice(0,28);"
+		@"  }catch(e){}"
+		@"}"
+		@"return 'NONE';"
 		@"})()";
 
 	MiaoJS(js, ^(NSString *result) {
 		if (!result || [result hasPrefix:@"NONE"]) {
-			MiaoAck(@"skip NONE - retry HID zona");
+			MiaoAck(@"skip NONE");
+			// fallback: tap zona bottone Skip (basso-destra player)
 			CGRect b = UIScreen.mainScreen.bounds;
-			CGFloat y = MIN(70 + b.size.width * 9.0 / 16.0 + 28, b.size.height * 0.58);
-			MiaoHumanTapAt(CGPointMake(b.size.width * 0.78, y), ^{});
-			MiaoToast(@"Skip: nessun bottone");
+			CGFloat y = MIN(90 + b.size.width * 9.0 / 16.0 + 20, b.size.height * 0.62);
+			MiaoHumanTapAt(CGPointMake(b.size.width * 0.82, y), ^{});
+			MiaoToast(@"Skip miss -> tap");
 			return;
 		}
 		MiaoAck([NSString stringWithFormat:@"skip %@", result]);
 		MiaoToast(@"Skip OK");
+	});
+}
+
+/// Click ads: CTA preroll, learn more, exo real-href, area player ads
+static void MiaoActClickAd(void) {
+	MiaoToast(@"Click ads...");
+	NSString *js =
+		@"(function(){"
+		@"function visible(el){"
+		@"  if(!el) return false;"
+		@"  var r=el.getBoundingClientRect();"
+		@"  return r.width>12&&r.height>12&&r.bottom>0&&r.top<window.innerHeight;"
+		@"}"
+		@"function go(el,tag){"
+		@"  if(!el||!visible(el)) return null;"
+		@"  try{el.scrollIntoView({block:'center'});}catch(e){}"
+		@"  try{el.click();}catch(e){}"
+		@"  try{el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));}catch(e){}"
+		@"  var h=el.getAttribute('real-href')||el.href||el.getAttribute('href')||'';"
+		@"  return tag+'|'+(h||((el.innerText||'').trim())).toString().slice(0,80);"
+		@"}"
+		@"var sels=["
+		@"  'a.exo-native-widget-item[real-href]',"
+		@"  'a.exo-native-widget-item',"
+		@"  'a[real-href*=\"magsrv\"]',"
+		@"  'a[real-href*=\"click.php\"]',"
+		@"  '[real-href*=\"magsrv\"]',"
+		@"  'a[href*=\"click.php\"]',"
+		@"  'a[href*=\"magsrv\"]',"
+		@"  'a[href*=\"exoclick\"]',"
+		@"  'a[href*=\"realsrv\"]',"
+		@"  '.ad-slot a[href]',"
+		@"  '[class*=\"vast\"] a[href]',"
+		@"  '[class*=\"preroll\"] a[href]',"
+		@"  'a[target=\"_blank\"]'"
+		@"];"
+		@"for(var s=0;s<sels.length;s++){"
+		@"  var nodes=[].slice.call(document.querySelectorAll(sels[s]));"
+		@"  for(var i=0;i<nodes.length;i++){"
+		@"    var el=nodes[i];"
+		@"    var h=(el.getAttribute('real-href')||el.href||'').toLowerCase();"
+		@"    var t=((el.innerText||'')+'').toLowerCase();"
+		@"    if(/noxreel\\.uk/.test(h)&&!/click|out|go|redirect/.test(h)) continue;"
+		@"    if(/skip|salta/.test(t)) continue;"
+		@"    var r=go(el,'AD');"
+		@"    if(r) return r;"
+		@"  }"
+		@"}"
+		@"var ctaRe=/learn\\s*more|visit|scopri|visita|continua|click\\s*here|vai\\s*al\\s*sito|annuncio|advertiser/i;"
+		@"var btns=[].slice.call(document.querySelectorAll('a,button,[role=button]'));"
+		@"for(var j=0;j<btns.length;j++){"
+		@"  if(ctaRe.test((btns[j].innerText||'')+'')){"
+		@"    var r2=go(btns[j],'CTA');"
+		@"    if(r2) return r2;"
+		@"  }"
+		@"}"
+		@"// area creativo HTML preroll (div sopra Skip)"
+		@"var player=document.querySelector('[data-nox-preroll],iframe[data-nox-preroll],iframe[title=\"preroll\"]');"
+		@"if(player){var r3=go(player,'PREROLL'); if(r3) return r3;}"
+		@"var box=document.querySelector('.relative.aspect-video, [class*=\"aspect-video\"]');"
+		@"if(box){"
+		@"  var mid=box.querySelector('a,button,div');"
+		@"  if(mid&&!/skip|salta/i.test((mid.innerText||'')+'')){"
+		@"    var r4=go(mid,'PLAYER');"
+		@"    if(r4) return r4;"
+		@"  }"
+		@"  try{box.click(); return 'PLAYER-BOX';}catch(e){}"
+		@"}"
+		@"// iframe same-origin ads"
+		@"var ifr=document.querySelectorAll('iframe');"
+		@"for(var k=0;k<ifr.length;k++){"
+		@"  try{"
+		@"    var doc=ifr[k].contentDocument||(ifr[k].contentWindow&&ifr[k].contentWindow.document);"
+		@"    if(!doc) continue;"
+		@"    var a=doc.querySelector('a[href],button,[real-href]');"
+		@"    if(a){a.click(); return 'IFRAME-AD|'+(a.href||a.getAttribute('real-href')||'').toString().slice(0,60);}"
+		@"  }catch(e){}"
+		@"}"
+		@"return 'NONE';"
+		@"})()";
+
+	MiaoJS(js, ^(NSString *result) {
+		if (!result || [result hasPrefix:@"NONE"]) {
+			MiaoAck(@"clickad NONE");
+			CGRect b = UIScreen.mainScreen.bounds;
+			// tap centro player (spesso creativo ads)
+			MiaoHumanTapAt(CGPointMake(b.size.width * 0.5, MIN(200, b.size.height * 0.28)), ^{});
+			MiaoToast(@"Ads miss -> tap player");
+			return;
+		}
+		MiaoAck([NSString stringWithFormat:@"clickad %@", result]);
+		MiaoToast([NSString stringWithFormat:@"Ads %@", [[result componentsSeparatedByString:@"|"] firstObject]]);
 	});
 }
 
@@ -430,16 +537,18 @@ static void MiaoHandle(NSString *cmd) {
 		MiaoToast(@"Safari OK");
 	} else if ([cmd isEqualToString:@"clickvideo"]) {
 		MiaoActClickVideo();
+	} else if ([cmd isEqualToString:@"clickad"]) {
+		MiaoActClickAd();
 	} else if ([cmd isEqualToString:@"closeads"]) {
 		NSInteger n = MiaoCloseNonNoxTabs();
-		MiaoToast([NSString stringWithFormat:@"Ads chiuse %ld", (long)n]);
+		MiaoToast([NSString stringWithFormat:@"Ads chiuse %@", @(n)]);
 	} else if ([cmd isEqualToString:@"skipad"]) {
 		MiaoActSkip();
 	} else if ([cmd isEqualToString:@"human"]) {
 		MiaoActHumanWatch();
 	} else if ([cmd isEqualToString:@"closeextra"]) {
 		NSInteger n = MiaoCloseNonNoxTabs();
-		MiaoToast([NSString stringWithFormat:@"Extra %ld", (long)n]);
+		MiaoToast([NSString stringWithFormat:@"Extra %@", @(n)]);
 	} else if ([cmd isEqualToString:@"where"]) {
 		MiaoActWhere(^(NSString *p) { MiaoToast(p ?: @"?"); });
 	}
@@ -459,7 +568,7 @@ void MiaoStartSafari(void) {
 	MiaoLog(@"safari ready 0.7");
 	MiaoToast(@"Miao Safari ON");
 
-	for (NSString *n in @[ @"ping", @"clickvideo", @"closeads", @"skipad", @"human", @"closeextra", @"where" ]) {
+	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human", @"closeextra", @"where" ]) {
 		NSString *full = [NSString stringWithFormat:@"com.noxlab.miao.%@", n];
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
@@ -560,15 +669,18 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 
 		MiaoAfter(13.0, ^{ MiaoSendCmd(@"closeads"); });
 
-		MiaoAfter(23.0, ^{
-			MiaoToast(@"Skip...");
-			MiaoSendCmd(@"skipad");
-		});
-		MiaoAfter(24.5, ^{ MiaoSendCmd(@"skipad"); });
+		// Click ads (CTA / exo / player) prima dello Skip
+		MiaoAfter(16.0, ^{ MiaoSendCmd(@"clickad"); });
+		MiaoAfter(19.0, ^{ MiaoSendCmd(@"clickad"); });
 
-		MiaoAfter(27.0, ^{ MiaoSendCmd(@"human"); });
+		// Skip: bottone abilitato verso fine countdown (~10s). Forziamo enable+click.
+		MiaoAfter(22.0, ^{ MiaoSendCmd(@"skipad"); });
+		MiaoAfter(23.5, ^{ MiaoSendCmd(@"skipad"); });
+		MiaoAfter(25.0, ^{ MiaoSendCmd(@"skipad"); });
 
-		MiaoAfter(27.0 + watch, ^{
+		MiaoAfter(27.5, ^{ MiaoSendCmd(@"human"); });
+
+		MiaoAfter(27.5 + watch, ^{
 			MiaoSendCmd(@"closeextra");
 			MiaoAfter(1.2, ^{ if (done) done(); });
 		});
@@ -596,8 +708,8 @@ static void MiaoSession(void) {
 	}
 	gSessionBusy = YES;
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog(@"session 0.7 js-nav");
-	MiaoToast(@"Sessione 0.7...");
+	MiaoLog(@"session 0.7.1 ads+skip");
+	MiaoToast(@"Sessione 0.7.1...");
 	MiaoStep(0, MiaoCycles());
 }
 
@@ -628,7 +740,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.7 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.7.1 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 
