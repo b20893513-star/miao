@@ -1,19 +1,21 @@
-# Coordinate in *points* (non pixel retina).
-# iPhone 11 Pro Max ≈ 414 × 896
-#
-# Copia su device (Filza):
+# Prefs Miao — copia su:
 #   /var/mobile/Library/Preferences/com.noxlab.miao.plist
 #
-# Poi: 3× Volume DOWN → tap
-# oppure NewTerm: notifyutil -p com.noxlab.miao.tap
+# AllowJSVideoFallback=true apre /video/ senza gesture → NESSUN popunder Exo.
 
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>TapX</key>
-	<real>80</real>
-	<key>TapY</key>
-	<real>160</real>
+	<key>HomeURL</key>
+	<string>https://noxreel.uk/</string>
+	<key>WaitSeconds</key>
+	<real>12</real>
+	<key>Cycles</key>
+	<integer>3</integer>
+	<key>AllowJSVideoFallback</key>
+	<false/>
+	<key>DisableBackboardHID</key>
+	<false/>
 </dict>
 </plist>
