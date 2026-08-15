@@ -216,34 +216,80 @@ static NSString *MiaoWebViewURL(id wk) {
 	return @"";
 }
 
-/**
- Quando un popunder apre la scheda ads, la webview piu' grande e' quella
- DELL'AD: prendendo quella mandavamo tutto il JS sulla pagina sbagliata.
- Priorita': webview del sito visibile, poi webview del sito anche nascosta,
- infine la piu' grande visibile.
- */
-static id MiaoBestWebView(void) {
+static NSArray *MiaoAllWebViews(void) {
 	NSMutableArray *all = [NSMutableArray array];
 	for (UIWindow *w in MiaoWindows()) MiaoFindWK(w, all);
+	return all;
+}
 
-	id siteVisible = nil, siteAny = nil, biggest = nil;
-	CGFloat siteArea = 0, bigArea = 0;
-	for (UIView *v in all) {
-		BOOL visible = !v.hidden && v.alpha >= 0.05 && v.window;
-		CGFloat area = v.bounds.size.width * v.bounds.size.height;
-		BOOL site = MiaoIsSiteURL(MiaoWebViewURL(v));
-		if (site && !siteAny) siteAny = v;
-		if (site && visible && area > siteArea) { siteArea = area; siteVisible = v; }
-		if (visible && area > bigArea) { bigArea = area; biggest = v; }
+static BOOL MiaoWKVisible(UIView *v) {
+	if (!v.window || v.hidden || v.alpha < 0.05) return NO;
+	if (v.bounds.size.width < 50 || v.bounds.size.height < 50) return NO;
+	for (UIView *p = v.superview; p; p = p.superview) {
+		if (p.hidden || p.alpha < 0.05) return NO;
 	}
-	id pick = siteVisible ?: (siteAny ?: (biggest ?: all.lastObject));
-	MiaoLog([NSString stringWithFormat:@"wk count %lu pick=%@ site=%d",
-		(unsigned long)all.count, MiaoWebViewURL(pick), pick == siteVisible || pick == siteAny]);
+	return YES;
+}
+
+/// La webview davvero davanti agli occhi: dopo un popunder e' quella dell'ad.
+static id MiaoFrontWebView(void) {
+	id front = nil;
+	CGFloat best = 0;
+	for (UIView *v in MiaoAllWebViews()) {
+		if (!MiaoWKVisible(v)) continue;
+		CGFloat area = v.bounds.size.width * v.bounds.size.height;
+		if (area > best) {
+			best = area;
+			front = v;
+		}
+	}
+	return front;
+}
+
+/// La webview del sito, anche se la sua scheda e' in secondo piano.
+static id MiaoSiteWebView(void) {
+	id hidden = nil;
+	for (UIView *v in MiaoAllWebViews()) {
+		if (!MiaoIsSiteURL(MiaoWebViewURL(v))) continue;
+		if (MiaoWKVisible(v)) return v;
+		if (!hidden) hidden = v;
+	}
+	return hidden;
+}
+
+/**
+ L'invariante che mancava: si puo' tappare solo se la webview del sito e'
+ ANCHE quella in primo piano. Se leggiamo le coordinate dalla pagina del sito
+ mentre a schermo c'e' l'ad, il touch atterra sull'ad e la sonda non lo vede
+ mai: e' esattamente il `NO TOUCH` dopo l'apertura del popunder.
+ */
+static BOOL MiaoSiteIsFront(void) {
+	id front = MiaoFrontWebView();
+	return front && MiaoIsSiteURL(MiaoWebViewURL(front));
+}
+
+static id MiaoBestWebView(void) {
+	id pick = MiaoSiteWebView() ?: MiaoFrontWebView();
+	if (!pick) pick = MiaoAllWebViews().lastObject;
 	return pick;
 }
 
-static void MiaoJS(NSString *js, void (^done)(NSString *)) {
-	id wk = MiaoBestWebView();
+/// Stato reale di Safari: quante webview, quali URL, quale davanti.
+static NSString *MiaoWebState(void) {
+	NSMutableString *s = [NSMutableString string];
+	NSArray *all = MiaoAllWebViews();
+	id front = MiaoFrontWebView();
+	[s appendFormat:@"wk=%lu front=%@ siteFront=%d",
+		(unsigned long)all.count, MiaoWebViewURL(front), MiaoSiteIsFront()];
+	for (UIView *v in all) {
+		[s appendFormat:@"\n  %@ vis=%d %.0fx%.0f %@",
+			(v == front) ? @"*" : @"-", MiaoWKVisible(v),
+			v.bounds.size.width, v.bounds.size.height, MiaoWebViewURL(v)];
+	}
+	return s;
+}
+
+static void MiaoJSIn(id wk, NSString *js, void (^done)(NSString *)) {
 	if (!wk) {
 		MiaoLog(@"js no wk");
 		if (done) done(nil);
@@ -261,6 +307,13 @@ static void MiaoJS(NSString *js, void (^done)(NSString *)) {
 		if (done) done(s);
 	});
 }
+
+static void MiaoJS(NSString *js, void (^done)(NSString *)) {
+	MiaoJSIn(MiaoBestWebView(), js, done);
+}
+
+/// Riporta la pagina del sito in primo piano (definita dopo le API schede).
+static void MiaoEnsureSiteFront(void (^done)(BOOL ok));
 
 static CGPoint MiaoParseXY(NSString *s) {
 	if (s.length < 3) return CGPointZero;
@@ -456,6 +509,8 @@ static void MiaoInstallProbe(void (^done)(void)) {
 	});
 }
 
+static void MiaoCalibRun(void);
+
 /// Legge dove e' atterrato l'ultimo touch: CGPointZero se nessuno.
 static void MiaoReadProbe(void (^done)(CGPoint landed, BOOL trusted, NSString *raw)) {
 	MiaoJS(kMiaoProbeReadJS, ^(NSString *r) {
@@ -470,9 +525,19 @@ static void MiaoReadProbe(void (^done)(CGPoint landed, BOOL trusted, NSString *r
 	});
 }
 
-/// Path principale: coords viewport DOM → schermo (+ correzione) → HID worker.
+/// Path principale: coords viewport DOM → finestra (+ correzione) → tap.
 static BOOL MiaoTrustedTapViewport(CGPoint vp, NSString *label) {
 	if (vp.x < 1 && vp.y < 1) return NO;
+
+	// Le coordinate arrivano dalla pagina del sito: se a schermo c'e' l'ad,
+	// il touch atterrerebbe sull'ad. Meglio non tappare che tappare a caso.
+	id src = MiaoBestWebView();
+	if (MiaoIsSafari() && src && src != MiaoFrontWebView()) {
+		MiaoAck([NSString stringWithFormat:@"tap annullato, sito non in primo piano\n%@", MiaoWebState()]);
+		MiaoToast(@"Tap NO: ad davanti");
+		return NO;
+	}
+
 	MiaoCalLoad();
 	CGPoint win = MiaoViewportToWindow(vp);
 	win.x += gCalDX;
@@ -488,6 +553,17 @@ static BOOL MiaoTrustedTapViewport(CGPoint vp, NSString *label) {
  */
 static void MiaoActCalib(void) {
 	MiaoToast(@"Calib...");
+	MiaoEnsureSiteFront(^(BOOL front) {
+		if (!front) {
+			MiaoAck([NSString stringWithFormat:@"calib annullata, sito non davanti\n%@", MiaoWebState()]);
+			MiaoToast(@"CAL: ad davanti");
+			return;
+		}
+		MiaoCalibRun();
+	});
+}
+
+static void MiaoCalibRun(void) {
 	NSString *jsSafe =
 		@"(function(){"
 		@"var W=window.innerWidth,H=window.innerHeight;"
@@ -523,7 +599,8 @@ static void MiaoActCalib(void) {
 			MiaoAfter(1.3, ^{
 				MiaoReadProbe(^(CGPoint landed, BOOL trusted, NSString *raw) {
 					if (landed.x < 1 && landed.y < 1) {
-						MiaoAck(@"calib NO TOUCH — HID non arriva al web content");
+						MiaoAck([NSString stringWithFormat:
+							@"calib NO TOUCH — il touch non e' arrivato a questa pagina\n%@", MiaoWebState()]);
 						MiaoToast(@"CAL NO TOUCH");
 						return;
 					}
@@ -775,7 +852,8 @@ static void MiaoActClickVideo(void) {
 										// diagnosi: il touch e' arrivato alla pagina?
 										MiaoReadProbe(^(CGPoint landed, BOOL trusted, NSString *raw) {
 											if (landed.x < 1 && landed.y < 1) {
-												MiaoAck(@"tap miss — nessun touch nel web content (HID non passa)");
+												MiaoAck([NSString stringWithFormat:
+													@"tap miss — nessun touch in questa pagina\n%@", MiaoWebState()]);
 												MiaoToast(@"Miss NO TOUCH");
 											} else {
 												MiaoAck([NSString stringWithFormat:@"tap miss — touch a %@ (voluto %.0f,%.0f)",
@@ -1088,14 +1166,98 @@ static NSInteger MiaoCloseNonNoxTabs(void) {
 	return closed;
 }
 
-/// Quante schede ads sono aperte adesso.
+/**
+ Chiude le pagine ads chiamando `window.close()` dentro la loro stessa webview.
+ Non dipende dalle API private delle schede (che su iOS 16 non rispondono) e
+ funziona perche' quelle pagine sono state aperte da uno script.
+ */
+static void MiaoCloseAdWebViews(void (^done)(NSInteger closed)) {
+	NSMutableArray *ads = [NSMutableArray array];
+	for (UIView *v in MiaoAllWebViews()) {
+		NSString *u = MiaoWebViewURL(v);
+		if (u.length && !MiaoIsSiteURL(u)) [ads addObject:v];
+	}
+	if (!ads.count) {
+		if (done) done(0);
+		return;
+	}
+
+	__block BOOL finished = NO;
+	__block NSInteger left = (NSInteger)ads.count;
+	NSInteger total = (NSInteger)ads.count;
+	void (^finish)(void) = ^{
+		if (finished) return;
+		finished = YES;
+		if (done) done(total);
+	};
+
+	for (id wk in ads) {
+		MiaoLog([NSString stringWithFormat:@"window.close %@", MiaoWebViewURL(wk)]);
+		MiaoJSIn(wk, @"(function(){try{window.close();}catch(e){}return 'closing';})()", ^(NSString *r) {
+			(void)r;
+			if (--left <= 0) finish();
+		});
+	}
+	// se una webview muore prima del callback non lo riceviamo piu'
+	MiaoAfter(1.5, finish);
+}
+
+/**
+ Quante pagine ads sono aperte. Conta le webview, non le schede: la lista
+ schede arriva da API private che possono tornare vuote, le webview le vediamo
+ sempre nella gerarchia.
+ */
 static NSInteger MiaoAdTabCount(void) {
 	NSInteger n = 0;
-	for (id tab in MiaoTabList(MiaoBrowser())) {
-		NSString *u = MiaoTabURL(tab);
+	for (UIView *v in MiaoAllWebViews()) {
+		NSString *u = MiaoWebViewURL(v);
 		if (u.length && !MiaoIsSiteURL(u)) n++;
 	}
 	return n;
+}
+
+/**
+ Riporta il sito in primo piano provando le vie in ordine di affidabilita' e
+ verificando dopo ogni tentativo, invece di dare per riuscito il primo.
+ */
+static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
+	if (!MiaoIsSafari()) {
+		if (done) done(NO);
+		return;
+	}
+	if (MiaoSiteIsFront()) {
+		if (done) done(YES);
+		return;
+	}
+	MiaoAck([NSString stringWithFormat:@"sito non in primo piano, recupero\n%@", MiaoWebState()]);
+
+	MiaoCloseAdWebViews(^(NSInteger closed) {
+		MiaoLog([NSString stringWithFormat:@"chiuse %ld pagine ads", (long)closed]);
+		MiaoAfter(1.0, ^{
+			if (MiaoSiteIsFront()) {
+				MiaoLog(@"front ok via window.close");
+				if (done) done(YES);
+				return;
+			}
+			MiaoCloseNonNoxTabs();
+			MiaoSelectSiteTab();
+			MiaoAfter(1.0, ^{
+				if (MiaoSiteIsFront()) {
+					MiaoLog(@"front ok via API schede");
+					if (done) done(YES);
+					return;
+				}
+				// ultima via: riapri la home, Safari porta il sito davanti
+				MiaoOpenURL(MiaoHomeURL());
+				MiaoAfter(3.5, ^{
+					BOOL ok = MiaoSiteIsFront();
+					MiaoAck([NSString stringWithFormat:@"recupero %@\n%@",
+						ok ? @"ok via openURL" : @"FALLITO", MiaoWebState()]);
+					if (done) done(ok);
+				});
+			});
+		});
+	});
 }
 
 #pragma mark - Loop ads
@@ -1136,8 +1298,10 @@ static void MiaoLoopAfterTap(void) {
 	MiaoToast([NSString stringWithFormat:@"Ads +%ld", (long)ads]);
 	// resta sull'ad quanto basta a registrare l'impression, poi chiudi
 	MiaoAfter(MiaoHumanDelay(2.2, 1.8), ^{
-		MiaoCloseNonNoxTabs();
-		MiaoAfter(MiaoHumanDelay(1.1, 0.9), ^{ MiaoLoopStep(); });
+		MiaoCloseAdWebViews(^(NSInteger closed) {
+			MiaoAck([NSString stringWithFormat:@"loop: chiuse %ld pagine ads", (long)closed]);
+			MiaoAfter(MiaoHumanDelay(1.1, 0.9), ^{ MiaoLoopStep(); });
+		});
 	});
 }
 
@@ -1174,11 +1338,15 @@ static void MiaoLoopStep(void) {
 	gLoopLeft--;
 	MiaoToast([NSString stringWithFormat:@"Loop %ld", (long)(gLoopLeft + 1)]);
 
-	MiaoSelectSiteTab();
-	MiaoAfter(MiaoHumanDelay(0.6, 0.6), ^{
+	// Niente tap finche' il sito non e' davvero davanti
+	MiaoEnsureSiteFront(^(BOOL front) {
+		if (!front) {
+			MiaoToast(@"Sito non davanti");
+			MiaoAfter(MiaoHumanDelay(2.5, 1.5), ^{ MiaoLoopStep(); });
+			return;
+		}
 		MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *path) {
 			if (!path.length) {
-				// nessuna webview del sito raggiungibile: riapri la home
 				MiaoOpenURL(MiaoHomeURL());
 				MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoLoopTap(); });
 				return;
@@ -1251,8 +1419,14 @@ static void MiaoHandle(NSString *cmd) {
 	} else if ([cmd isEqualToString:@"adloop"]) {
 		MiaoActLoop();
 	} else if ([cmd isEqualToString:@"backsite"]) {
-		BOOL ok = MiaoSelectSiteTab();
-		MiaoToast(ok ? @"Su sito" : @"Sito non trovato");
+		MiaoEnsureSiteFront(^(BOOL ok) {
+			MiaoToast(ok ? @"Su sito" : @"Sito non recuperato");
+		});
+	} else if ([cmd isEqualToString:@"state"]) {
+		NSString *s = MiaoWebState();
+		MiaoAck(s);
+		MiaoToast([NSString stringWithFormat:@"WK %ld front=%@",
+			(long)MiaoAllWebViews().count, MiaoSiteIsFront() ? @"sito" : @"ALTRO"]);
 	}
 }
 
@@ -1267,11 +1441,11 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.9.2 adloop");
+	MiaoLog(@"safari ready 0.9.3 front-guard");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
-						   @"closeextra", @"where", @"calib", @"adloop", @"backsite" ]) {
+						   @"closeextra", @"where", @"calib", @"adloop", @"backsite", @"state" ]) {
 		NSString *full = [NSString stringWithFormat:@"com.noxlab.miao.%@", n];
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
@@ -1365,8 +1539,9 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 			MiaoSendCmd(@"adloop");
 		});
 
-		// Il loop e' autonomo: qui stimiamo solo quando avra' finito
-		NSTimeInterval loopEnd = 8.5 + MiaoLoopTaps() * 10.0 + 5.0;
+		// Il loop e' autonomo: qui stimiamo solo quando avra' finito. Il recupero
+		// della scheda giusta puo' aggiungere qualche secondo per giro.
+		NSTimeInterval loopEnd = 8.5 + MiaoLoopTaps() * 14.0 + 6.0;
 
 		MiaoAfter(loopEnd - 1.0, ^{
 			id allow = MiaoPrefs()[@"AllowJSVideoFallback"];
@@ -1415,8 +1590,8 @@ static void MiaoSession(void) {
 	}
 	gSessionBusy = YES;
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog(@"session 0.9.2 adloop");
-	MiaoToast(@"Sessione 0.9.2...");
+	MiaoLog(@"session 0.9.3 front-guard");
+	MiaoToast(@"Sessione 0.9.3...");
 	MiaoStep(0, MiaoCycles());
 }
 
@@ -1447,7 +1622,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.9.2 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.9.3 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 
