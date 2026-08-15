@@ -2,8 +2,10 @@
 	Filter = {
 		Bundles = (
 			"com.apple.springboard",
-			"com.apple.mobilesafari",
-			"com.apple.backboardd"
+			"com.apple.mobilesafari"
+		);
+		Executables = (
+			"backboardd"
 		);
 	};
 }

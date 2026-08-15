@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.8.0
+Version: 0.8.1
 Architecture: iphoneos-arm64
-Description: Trusted HID taps via backboardd (human-like). Safari sends coords.
+Description: Inject backboardd via Executables filter; HID via /var/tmp.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

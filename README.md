@@ -1,22 +1,16 @@
-# Miao 0.8 — tap trusted via backboardd
+# Miao 0.8.1
 
-## Idea
-Safari/JS da solo **non** apre i popunder Exo.  
-I tocchi “veri” li manda **backboardd** (come il dito).
+## Fix
+`backboardd` non e' un Bundle: con solo `Bundles` **non veniva iniettato**.  
+Ora: `Executables = (backboardd)`. Comandi HID su `/var/tmp/miao-hid.txt` (leggibile dal daemon).
 
-Flusso:
-1. Safari legge coordinate del thumb dal DOM  
-2. Scrive `miao-hid.txt` + notify  
-3. **backboardd** esegue gesto HID (down/move/up)  
-4. Se dopo ~3s non sei su `/video/`, fallback JS  
+## Dopo install
+**Userspace Reboot** obbligatorio.
 
-## Install
-Sileo → **0.8.0** → **Userspace Reboot** (obbligatorio: carica anche backboardd)
+## Verifica
+- Toast `HID x,y` = Safari manda coords  
+- Toast `HID? backboardd OFF` = daemon non vivo  
+- File `/var/tmp/miao-bb-alive.txt` deve esistere  
+- Log `/var/tmp/miao-bb.log` con `hid-exec`
 
-## Test
-3× Volume. Toast: `HID x,y`.  
-Se parte la **scheda ads** → ci siamo.  
-Se schermo nero: prefs `DisableBackboardHID=1` oppure reinstalla 0.7.1.
-
-## Log
-`/var/mobile/Documents/miao-loaded.txt` — cerca `hid-req` / `hid-exec` / `backboardd`
+Se `backboardd OFF` → l'iniezione daemon non prende: dimmelo.

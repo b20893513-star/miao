@@ -19,7 +19,10 @@ static NSString *const kHomeDefault = @"https://noxreel.uk/";
 static NSString *const kCmdPath = @"/var/mobile/Documents/miao-cmd.txt";
 static NSString *const kAckPath = @"/var/mobile/Documents/miao-ack.txt";
 static NSString *const kLogPath = @"/var/mobile/Documents/miao-loaded.txt";
-static NSString *const kHidPath = @"/var/mobile/Documents/miao-hid.txt";
+static NSString *const kHidPath = @"/var/tmp/miao-hid.txt";
+static NSString *const kHidPathAlt = @"/var/mobile/Documents/miao-hid.txt";
+static NSString *const kBbAlivePath = @"/var/tmp/miao-bb-alive.txt";
+static NSString *const kBbLogPath = @"/var/tmp/miao-bb.log";
 static BOOL gBackboardStarted = NO;
 static NSTimeInterval gLastHid = 0;
 
@@ -220,6 +223,20 @@ static CGPoint MiaoParseXY(NSString *s) {
 	return CGPointMake([p[0] doubleValue], [p[1] doubleValue]);
 }
 
+static void MiaoBbLog(NSString *note) {
+	NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], note ?: @""];
+	NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kBbLogPath];
+	if (!fh) {
+		[line writeToFile:kBbLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		return;
+	}
+	@try {
+		[fh seekToEndOfFile];
+		[fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+	} @catch (NSException *ex) { (void)ex; }
+	[fh closeFile];
+}
+
 /// Chiede un tap HID a backboardd (trusted). Safari/SB non dispatchano HID.
 static void MiaoRequestHidTap(CGPoint pt) {
 	id dis = MiaoPrefs()[@"DisableBackboardHID"];
@@ -232,17 +249,31 @@ static void MiaoRequestHidTap(CGPoint pt) {
 	pt.x = MAX(8, MIN(b.size.width - 8, pt.x));
 	pt.y = MAX(40, MIN(b.size.height - 8, pt.y));
 	NSString *body = [NSString stringWithFormat:@"%.2f,%.2f\n%.0f", pt.x, pt.y, [[NSDate date] timeIntervalSince1970]];
+	// /var/tmp leggibile da backboardd; Documents a volte no
 	[body writeToFile:kHidPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	[body writeToFile:kHidPathAlt atomically:YES encoding:NSUTF8StringEncoding error:nil];
 	notify_post("com.noxlab.miao.hidtap");
-	MiaoLog([NSString stringWithFormat:@"hid-req %.0f,%.0f", pt.x, pt.y]);
-	MiaoToast([NSString stringWithFormat:@"HID %.0f,%.0f", pt.x, pt.y]);
+	BOOL bb = [[NSFileManager defaultManager] fileExistsAtPath:kBbAlivePath];
+	MiaoLog([NSString stringWithFormat:@"hid-req %.0f,%.0f bbAlive=%d", pt.x, pt.y, bb ? 1 : 0]);
+	MiaoToast(bb ? [NSString stringWithFormat:@"HID %.0f,%.0f", pt.x, pt.y]
+				 : @"HID? backboardd OFF");
+}
+
+static NSString *MiaoReadHidPayload(void) {
+	for (NSString *path in @[ kHidPath, kHidPathAlt ]) {
+		NSString *raw = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+		if (raw.length >= 3) {
+			[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+			return raw;
+		}
+	}
+	return nil;
 }
 
 static void MiaoConsumeHidFile(void) {
 	if (!MiaoIsBackboardd()) return;
-	NSString *raw = [NSString stringWithContentsOfFile:kHidPath encoding:NSUTF8StringEncoding error:nil];
+	NSString *raw = MiaoReadHidPayload();
 	if (raw.length < 3) return;
-	[[NSFileManager defaultManager] removeItemAtPath:kHidPath error:nil];
 	NSString *line = [[raw componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] firstObject];
 	NSArray *p = [line componentsSeparatedByString:@","];
 	if (p.count < 2) return;
@@ -250,27 +281,36 @@ static void MiaoConsumeHidFile(void) {
 	CGFloat y = [p[1] doubleValue];
 	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
 	if (now - gLastHid < 0.55) {
-		MiaoLog(@"hid debounce");
+		MiaoBbLog(@"hid debounce");
 		return;
 	}
 	gLastHid = now;
+	MiaoBbLog([NSString stringWithFormat:@"hid-exec %.0f,%.0f", x, y]);
 	MiaoLog([NSString stringWithFormat:@"hid-exec %.0f,%.0f", x, y]);
 	MiaoPerformHumanTap(x, y);
 }
 
 void MiaoStartBackboardd(void) {
-	if (gBackboardStarted || !MiaoIsBackboardd()) return;
+	if (gBackboardStarted) return;
+	if (!MiaoIsBackboardd()) {
+		MiaoBbLog([NSString stringWithFormat:@"start refused bid=%@ exe=%@",
+			NSBundle.mainBundle.bundleIdentifier ?: @"-",
+			NSProcessInfo.processInfo.arguments.firstObject ?: @"-"]);
+		return;
+	}
 	gBackboardStarted = YES;
+	[@"alive\n" writeToFile:kBbAlivePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	MiaoBbLog(@"backboardd listener start");
 	MiaoLog(@"backboardd listener start");
 	int token = 0;
 	notify_register_dispatch("com.noxlab.miao.hidtap", &token,
 		dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),
 		^(__unused int t) { MiaoConsumeHidFile(); });
-	// poll backup
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		while (YES) {
 			MiaoConsumeHidFile();
-			usleep(400000);
+			[@"alive\n" writeToFile:kBbAlivePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+			usleep(350000);
 		}
 	});
 }
@@ -800,8 +840,8 @@ static void MiaoSession(void) {
 	}
 	gSessionBusy = YES;
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog(@"session 0.8 backboardd-hid");
-	MiaoToast(@"Sessione 0.8 HID...");
+	MiaoLog(@"session 0.8.1 backboardd-exec");
+	MiaoToast(@"Sessione 0.8.1...");
 	MiaoStep(0, MiaoCycles());
 }
 
@@ -832,7 +872,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.8 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.1 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 	else if (MiaoIsBackboardd()) MiaoStartBackboardd();
 }
