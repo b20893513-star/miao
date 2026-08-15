@@ -117,6 +117,28 @@ static NSTimeInterval MiaoWatchSec(void) {
 	return MAX(8.0, MIN(120.0, s));
 }
 
+/// Quanti click sul sito fa il loop ads.
+static NSInteger MiaoLoopTaps(void) {
+	NSInteger n = MiaoPrefs()[@"LoopTaps"] ? [MiaoPrefs()[@"LoopTaps"] integerValue] : 5;
+	return MAX(1, MIN(50, n));
+}
+
+/// Host del sito: serve a distinguere le nostre schede da quelle aperte dagli ads.
+static NSString *MiaoSiteHost(void) {
+	NSString *h = [NSURL URLWithString:MiaoHomeURL()].host.lowercaseString;
+	if (!h.length) return @"noxreel";
+	return [h hasPrefix:@"www."] ? [h substringFromIndex:4] : h;
+}
+
+static BOOL MiaoIsSiteURL(NSString *url) {
+	return url.length && [url.lowercaseString containsString:MiaoSiteHost()];
+}
+
+/// Ritardo casuale: le pause identiche sono la firma piu' facile da riconoscere.
+static NSTimeInterval MiaoHumanDelay(NSTimeInterval base, NSTimeInterval spread) {
+	return base + (double)arc4random_uniform((uint32_t)MAX(1, spread * 1000.0)) / 1000.0;
+}
+
 static NSInteger MiaoCycles(void) {
 	NSInteger n = MiaoPrefs()[@"Cycles"] ? [MiaoPrefs()[@"Cycles"] integerValue] : 1;
 	return MAX(1, MIN(10, n));
@@ -185,18 +207,39 @@ static void MiaoFindWK(UIView *v, NSMutableArray *out) {
 	for (UIView *s in v.subviews) MiaoFindWK(s, out);
 }
 
+static NSString *MiaoWebViewURL(id wk) {
+	SEL sel = NSSelectorFromString(@"URL");
+	if (![wk respondsToSelector:sel]) return @"";
+	id u = ((id (*)(id, SEL))objc_msgSend)(wk, sel);
+	if ([u isKindOfClass:[NSURL class]]) return [(NSURL *)u absoluteString] ?: @"";
+	if ([u isKindOfClass:[NSString class]]) return u;
+	return @"";
+}
+
+/**
+ Quando un popunder apre la scheda ads, la webview piu' grande e' quella
+ DELL'AD: prendendo quella mandavamo tutto il JS sulla pagina sbagliata.
+ Priorita': webview del sito visibile, poi webview del sito anche nascosta,
+ infine la piu' grande visibile.
+ */
 static id MiaoBestWebView(void) {
 	NSMutableArray *all = [NSMutableArray array];
 	for (UIWindow *w in MiaoWindows()) MiaoFindWK(w, all);
-	MiaoLog([NSString stringWithFormat:@"wk count %lu", (unsigned long)all.count]);
-	id best = nil;
-	CGFloat bestArea = 0;
+
+	id siteVisible = nil, siteAny = nil, biggest = nil;
+	CGFloat siteArea = 0, bigArea = 0;
 	for (UIView *v in all) {
-		if (v.hidden || v.alpha < 0.05 || !v.window) continue;
+		BOOL visible = !v.hidden && v.alpha >= 0.05 && v.window;
 		CGFloat area = v.bounds.size.width * v.bounds.size.height;
-		if (area > bestArea) { bestArea = area; best = v; }
+		BOOL site = MiaoIsSiteURL(MiaoWebViewURL(v));
+		if (site && !siteAny) siteAny = v;
+		if (site && visible && area > siteArea) { siteArea = area; siteVisible = v; }
+		if (visible && area > bigArea) { bigArea = area; biggest = v; }
 	}
-	return best ?: all.lastObject;
+	id pick = siteVisible ?: (siteAny ?: (biggest ?: all.lastObject));
+	MiaoLog([NSString stringWithFormat:@"wk count %lu pick=%@ site=%d",
+		(unsigned long)all.count, MiaoWebViewURL(pick), pick == siteVisible || pick == siteAny]);
+	return pick;
 }
 
 static void MiaoJS(NSString *js, void (^done)(NSString *)) {
@@ -617,51 +660,62 @@ static void MiaoActReady(void (^done)(BOOL ok)) {
 	});
 }
 
+/// Sceglie una thumb casuale, la memorizza in `__miaoTarget` e la porta a centro schermo.
+static NSString *const kMiaoJSPickThumb =
+	@"(function(){"
+	@"var as=[].slice.call(document.querySelectorAll('a[href*=\"/video/\"]'));"
+	@"if(!as.length) return 'NONE';"
+	@"var cand=as.filter(function(x){var r=x.getBoundingClientRect();return r.width>=40&&r.height>=40;});"
+	@"if(!cand.length) cand=as;"
+	// thumb casuale: cliccare sempre la stessa e' il segnale piu' ovvio di un bot
+	@"var a=cand[Math.floor(Math.random()*cand.length)];"
+	// memorizza il target: il tap deve colpire QUESTO, non un altro ripescato dopo
+	@"window.__miaoTarget=a;"
+	@"try{a.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});}catch(e){try{a.scrollIntoView(true);}catch(e2){}}"
+	@"var href=a.href||a.getAttribute('href')||'';"
+	@"if(href&&href.indexOf('http')!==0) href=location.origin+href;"
+	@"return 'SCROLL|'+href;"
+	@"})()";
+
+/**
+ Punto del tap sul target memorizzato da `__miaoTarget`.
+ Restituisce `x,y|HIT/MISS|elemento|href`, oppure `OFFSCREEN` se lo scroll non
+ ha portato la thumb nel viewport.
+ */
+static NSString *const kMiaoJSThumbPoint =
+	@"(function(){"
+	@"var a=window.__miaoTarget;"
+	@"if(!a||!a.getBoundingClientRect||!a.isConnected){"
+	@"  var as=[].slice.call(document.querySelectorAll('a[href*=\"/video/\"]'));"
+	@"  if(!as.length) return 'NONE';"
+	@"  var best=null,bestArea=0;"
+	@"  for(var i=0;i<as.length;i++){"
+	@"    var rr=as[i].getBoundingClientRect();"
+	@"    var vis=Math.max(0,Math.min(rr.bottom,window.innerHeight)-Math.max(rr.top,0));"
+	@"    var area=Math.max(0,rr.width)*vis;"
+	@"    if(area>bestArea&&rr.width>=40){bestArea=area;best=as[i];}"
+	@"  }"
+	@"  a=best||as[0];"
+	@"}"
+	@"var r=a.getBoundingClientRect();"
+	@"if(r.bottom<40||r.top>window.innerHeight-20) return 'OFFSCREEN';"
+	// punto casuale nella zona centrale: un dito non centra mai il pixel esatto
+	@"var fx=0.5+(Math.random()-0.5)*0.56, fy=0.5+(Math.random()-0.5)*0.56;"
+	@"var x=Math.round(r.left+r.width*fx), y=Math.round(r.top+r.height*fy);"
+	@"x=Math.max(2,Math.min(window.innerWidth-2,x));"
+	@"y=Math.max(4,Math.min(window.innerHeight-4,y));"
+	@"var el=document.elementFromPoint(x,y);"
+	@"var hit=el&&el.closest&&el.closest('a[href*=\"/video/\"]');"
+	@"var href=a.href||'';"
+	@"return x+','+y+'|'+(hit?'HIT':'MISS')+'|'+(el?(el.tagName+(el.className?'.'+String(el.className).slice(0,24):'')):'nil')+'|'+href;"
+	@"})()";
+
 static void MiaoActClickVideo(void) {
 	MiaoToast(@"Thumb...");
-	// 1) scroll instant  2) aspetta 3) ri-leggi coords + elementFromPoint  4) un solo tap BB
-	NSString *jsScroll =
-		@"(function(){"
-		@"var as=[].slice.call(document.querySelectorAll('a[href*=\"/video/\"]'));"
-		@"if(!as.length) return 'NONE';"
-		@"var a=null;"
-		@"for(var i=0;i<as.length;i++){"
-		@"  var r=as[i].getBoundingClientRect();"
-		@"  if(r.width>=40&&r.height>=40&&r.bottom>80&&r.top<window.innerHeight-20){a=as[i];break;}"
-		@"}"
-		@"if(!a) a=as[0];"
-		@"try{a.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});}catch(e){try{a.scrollIntoView(true);}catch(e2){}}"
-		@"var href=a.href||a.getAttribute('href')||'';"
-		@"if(href&&href.indexOf('http')!==0) href=location.origin+href;"
-		@"return 'SCROLL|'+href;"
-		@"})()";
+	// 1) scegli+scrolla  2) aspetta il layout  3) leggi il punto  4) tap umano
+	NSString *jsPoint = kMiaoJSThumbPoint;
 
-	NSString *jsPoint =
-		@"(function(){"
-		@"var as=[].slice.call(document.querySelectorAll('a[href*=\"/video/\"]'));"
-		@"if(!as.length) return 'NONE';"
-		@"var a=null,best=null,bestArea=0;"
-		@"for(var i=0;i<as.length;i++){"
-		@"  var r=as[i].getBoundingClientRect();"
-		@"  var vis=Math.max(0,Math.min(r.bottom,window.innerHeight)-Math.max(r.top,0));"
-		@"  var area=Math.max(0,r.width)*vis;"
-		@"  if(area>bestArea&&r.width>=40){bestArea=area;best=as[i];}"
-		@"  if(!a&&r.width>=40&&r.height>=40&&r.top>=50&&r.bottom<=window.innerHeight-10) a=as[i];"
-		@"}"
-		@"if(!a) a=best||as[0];"
-		@"var r=a.getBoundingClientRect();"
-		// punto casuale nella zona centrale: un dito non centra mai il pixel esatto
-		@"var fx=0.5+(Math.random()-0.5)*0.56, fy=0.5+(Math.random()-0.5)*0.56;"
-		@"var x=Math.round(r.left+r.width*fx), y=Math.round(r.top+r.height*fy);"
-		@"x=Math.max(2,Math.min(window.innerWidth-2,x));"
-		@"y=Math.max(2,Math.min(window.innerHeight-2,y));"
-		@"var el=document.elementFromPoint(x,y);"
-		@"var hit=el&&el.closest&&el.closest('a[href*=\"/video/\"]');"
-		@"var href=a.href||'';"
-		@"return x+','+y+'|'+(hit?'HIT':'MISS')+'|'+(el?(el.tagName+(el.className?'.'+String(el.className).slice(0,24):'')):'nil')+'|'+href;"
-		@"})()";
-
-	MiaoJS(jsScroll, ^(NSString *sc) {
+	MiaoJS(kMiaoJSPickThumb, ^(NSString *sc) {
 		if (!sc || [sc hasPrefix:@"NONE"]) {
 			MiaoAck(@"click NONE");
 			MiaoToast(@"Nessun thumb");
@@ -976,6 +1030,48 @@ static BOOL MiaoCloseTab(id bc, id tab) {
 	return NO;
 }
 
+/// Rende attiva una scheda: le firme cambiano tra versioni di Safari.
+static BOOL MiaoSelectTab(id bc, id tab) {
+	if (!bc || !tab) return NO;
+	id tc = nil;
+	@try { tc = [bc valueForKey:@"tabController"]; } @catch (NSException *ex) { (void)ex; }
+
+	for (id target in @[ bc, tc ?: bc ]) {
+		for (NSString *m in @[ @"setActiveTabDocument:animated:",
+							   @"_setActiveTabDocument:animated:",
+							   @"setActiveTabDocument:",
+							   @"selectTabDocument:",
+							   @"selectTab:" ]) {
+			SEL sel = NSSelectorFromString(m);
+			if (![target respondsToSelector:sel]) continue;
+			@try {
+				if ([m containsString:@"animated"])
+					((void (*)(id, SEL, id, BOOL))objc_msgSend)(target, sel, tab, NO);
+				else
+					((void (*)(id, SEL, id))objc_msgSend)(target, sel, tab);
+				MiaoLog([NSString stringWithFormat:@"selectTab via %@", m]);
+				return YES;
+			} @catch (NSException *ex) { (void)ex; }
+		}
+	}
+	return NO;
+}
+
+/// Riporta Safari sulla scheda del sito (dopo che l'ad ha rubato il primo piano).
+static BOOL MiaoSelectSiteTab(void) {
+	id bc = MiaoBrowser();
+	for (id tab in MiaoTabList(bc)) {
+		if (!MiaoIsSiteURL(MiaoTabURL(tab))) continue;
+		if (MiaoSelectTab(bc, tab)) {
+			MiaoLog(@"back to site tab");
+			return YES;
+		}
+	}
+	MiaoLog(@"site tab not found");
+	return NO;
+}
+
+/// Chiude le schede che non sono del sito (quelle aperte dagli ads).
 static NSInteger MiaoCloseNonNoxTabs(void) {
 	id bc = MiaoBrowser();
 	NSArray *tabs = MiaoTabList(bc);
@@ -983,11 +1079,143 @@ static NSInteger MiaoCloseNonNoxTabs(void) {
 	for (id tab in [tabs reverseObjectEnumerator]) {
 		NSString *u = MiaoTabURL(tab);
 		MiaoLog([NSString stringWithFormat:@"tab %@", u.length ? u : @"(empty)"]);
-		if ([u.lowercaseString containsString:@"noxreel"]) continue;
+		// una scheda ancora senza URL puo' essere l'ad in caricamento: non toccarla
+		if (MiaoIsSiteURL(u) || !u.length) continue;
 		if (MiaoCloseTab(bc, tab)) closed++;
 	}
+	if (closed > 0) MiaoSelectSiteTab();
 	MiaoAck([NSString stringWithFormat:@"closeads %ld of %lu", (long)closed, (unsigned long)tabs.count]);
 	return closed;
+}
+
+/// Quante schede ads sono aperte adesso.
+static NSInteger MiaoAdTabCount(void) {
+	NSInteger n = 0;
+	for (id tab in MiaoTabList(MiaoBrowser())) {
+		NSString *u = MiaoTabURL(tab);
+		if (u.length && !MiaoIsSiteURL(u)) n++;
+	}
+	return n;
+}
+
+#pragma mark - Loop ads
+
+/**
+ Il giro completo che serve al sito:
+
+ 1. torna sulla scheda del sito (l'ad ruba il primo piano) e, se il tap
+    precedente ci ha portati su `/video/`, risali alla home con `history.back()`
+ 2. scegli una thumb casuale e tappala con un touch umano
+ 3. lascia caricare l'impression, poi chiudi la scheda ads
+ 4. ripeti
+
+ Gira dentro Safari: le schede, il JS e il tap stanno tutti qui, quindi non
+ dipende dai tempi indovinati da SpringBoard.
+ */
+static NSInteger gLoopLeft = 0;
+static NSInteger gLoopAds = 0;
+static NSInteger gLoopTaps = 0;
+static BOOL gLoopBusy = NO;
+
+static void MiaoLoopStep(void);
+
+static void MiaoLoopFinish(void) {
+	gLoopBusy = NO;
+	MiaoAck([NSString stringWithFormat:@"loop fine tap=%ld ads=%ld", (long)gLoopTaps, (long)gLoopAds]);
+	MiaoToast([NSString stringWithFormat:@"Loop fine %ld tap %ld ads", (long)gLoopTaps, (long)gLoopAds]);
+}
+
+static void MiaoLoopAfterTap(void) {
+	NSInteger ads = MiaoAdTabCount();
+	if (ads <= 0) {
+		// nessun popunder: normale, Exo ha un frequency cap per utente
+		MiaoAfter(MiaoHumanDelay(0.9, 1.0), ^{ MiaoLoopStep(); });
+		return;
+	}
+	gLoopAds += ads;
+	MiaoToast([NSString stringWithFormat:@"Ads +%ld", (long)ads]);
+	// resta sull'ad quanto basta a registrare l'impression, poi chiudi
+	MiaoAfter(MiaoHumanDelay(2.2, 1.8), ^{
+		MiaoCloseNonNoxTabs();
+		MiaoAfter(MiaoHumanDelay(1.1, 0.9), ^{ MiaoLoopStep(); });
+	});
+}
+
+static void MiaoLoopTap(void) {
+	MiaoInstallProbe(nil);
+	MiaoJS(kMiaoJSPickThumb, ^(NSString *pick) {
+		if (!pick.length || [pick hasPrefix:@"NONE"]) {
+			MiaoAck([NSString stringWithFormat:@"loop no thumb (%@)", pick ?: @"nil"]);
+			MiaoToast(@"Loop no thumb");
+			MiaoAfter(MiaoHumanDelay(1.5, 1.0), ^{ MiaoLoopStep(); });
+			return;
+		}
+		MiaoAfter(MiaoHumanDelay(0.5, 0.8), ^{
+			MiaoJS(kMiaoJSThumbPoint, ^(NSString *res) {
+				CGPoint vp = MiaoParseXY([[res componentsSeparatedByString:@"|"] firstObject]);
+				if (vp.x < 1 && vp.y < 1) {
+					MiaoAck([NSString stringWithFormat:@"loop point %@", res ?: @"nil"]);
+					MiaoAfter(MiaoHumanDelay(1.2, 0.8), ^{ MiaoLoopStep(); });
+					return;
+				}
+				gLoopTaps++;
+				MiaoTrustedTapViewport(vp, @"loop");
+				MiaoAfter(MiaoHumanDelay(2.6, 1.8), ^{ MiaoLoopAfterTap(); });
+			});
+		});
+	});
+}
+
+static void MiaoLoopStep(void) {
+	if (gLoopLeft <= 0) {
+		MiaoLoopFinish();
+		return;
+	}
+	gLoopLeft--;
+	MiaoToast([NSString stringWithFormat:@"Loop %ld", (long)(gLoopLeft + 1)]);
+
+	MiaoSelectSiteTab();
+	MiaoAfter(MiaoHumanDelay(0.6, 0.6), ^{
+		MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *path) {
+			if (!path.length) {
+				// nessuna webview del sito raggiungibile: riapri la home
+				MiaoOpenURL(MiaoHomeURL());
+				MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoLoopTap(); });
+				return;
+			}
+			if (![path containsString:@"/video/"]) {
+				MiaoAfter(MiaoHumanDelay(0.7, 0.9), ^{ MiaoLoopTap(); });
+				return;
+			}
+			// il tap precedente ha aperto il video: torna indietro come una persona
+			MiaoJS(@"(function(){history.back();return 'back';})()", ^(NSString *r) {
+				(void)r;
+				MiaoAfter(MiaoHumanDelay(2.0, 1.2), ^{
+					MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *p2) {
+						if (p2 && [p2 containsString:@"/video/"]) {
+							MiaoAck(@"loop: back non ha funzionato, riapro la home");
+							MiaoOpenURL(MiaoHomeURL());
+						}
+						MiaoAfter(MiaoHumanDelay(1.5, 1.2), ^{ MiaoLoopTap(); });
+					});
+				});
+			});
+		});
+	});
+}
+
+static void MiaoActLoop(void) {
+	if (gLoopBusy) {
+		MiaoToast(@"Loop attivo");
+		return;
+	}
+	gLoopBusy = YES;
+	gLoopLeft = MiaoLoopTaps();
+	gLoopAds = 0;
+	gLoopTaps = 0;
+	MiaoAck([NSString stringWithFormat:@"loop start %ld", (long)gLoopLeft]);
+	MiaoToast([NSString stringWithFormat:@"Loop %ld click", (long)gLoopLeft]);
+	MiaoLoopStep();
 }
 
 #pragma mark - Safari cmd
@@ -1020,6 +1248,11 @@ static void MiaoHandle(NSString *cmd) {
 		MiaoActWhere(^(NSString *p) { MiaoToast(p ?: @"?"); });
 	} else if ([cmd isEqualToString:@"calib"]) {
 		MiaoActCalib();
+	} else if ([cmd isEqualToString:@"adloop"]) {
+		MiaoActLoop();
+	} else if ([cmd isEqualToString:@"backsite"]) {
+		BOOL ok = MiaoSelectSiteTab();
+		MiaoToast(ok ? @"Su sito" : @"Sito non trovato");
 	}
 }
 
@@ -1034,10 +1267,11 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.9.1 uikit-tap");
+	MiaoLog(@"safari ready 0.9.2 adloop");
 	MiaoToast(@"Miao Safari ON");
 
-	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human", @"closeextra", @"where", @"calib" ]) {
+	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
+						   @"closeextra", @"where", @"calib", @"adloop", @"backsite" ]) {
 		NSString *full = [NSString stringWithFormat:@"com.noxlab.miao.%@", n];
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
@@ -1125,14 +1359,16 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 		// Prima sessione: misura l'errore viewport→schermo con la sonda JS
 		if (idx == 0) MiaoAfter(4.6, ^{ MiaoSendCmd(@"calib"); });
 
-		// Tap thumb (trusted) — popunder Exo richiede gesture reale
+		// Il loop fa tutto dentro Safari: tap, chiusura scheda ads, ritorno al sito
 		MiaoAfter(8.5, ^{
-			MiaoToast(@"Click thumb...");
-			MiaoSendCmd(@"clickvideo");
+			MiaoToast(@"Loop ads...");
+			MiaoSendCmd(@"adloop");
 		});
 
-		// Backup openURL solo se AllowJSVideoFallback=1 (altrimenti rovina il test ads)
-		MiaoAfter(15.0, ^{
+		// Il loop e' autonomo: qui stimiamo solo quando avra' finito
+		NSTimeInterval loopEnd = 8.5 + MiaoLoopTaps() * 10.0 + 5.0;
+
+		MiaoAfter(loopEnd - 1.0, ^{
 			id allow = MiaoPrefs()[@"AllowJSVideoFallback"];
 			if (allow && [allow boolValue]) {
 				MiaoToast(@"Backup openURL");
@@ -1142,22 +1378,18 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 			}
 		});
 
-		MiaoAfter(13.0, ^{ MiaoSendCmd(@"closeads"); });
+		// Poi guarda un video come un utente: preroll, skip, scroll
+		MiaoAfter(loopEnd, ^{ MiaoSendCmd(@"clickvideo"); });
+		MiaoAfter(loopEnd + 4.0, ^{ MiaoSendCmd(@"closeads"); });
+		MiaoAfter(loopEnd + 6.0, ^{ MiaoSendCmd(@"clickad"); });
+		MiaoAfter(loopEnd + 9.0, ^{ MiaoSendCmd(@"clickad"); });
+		MiaoAfter(loopEnd + 12.0, ^{ MiaoSendCmd(@"skipad"); });
+		MiaoAfter(loopEnd + 14.0, ^{ MiaoSendCmd(@"skipad"); });
+		MiaoAfter(loopEnd + 16.0, ^{ MiaoSendCmd(@"human"); });
 
-		// Click ads (CTA / exo / player) prima dello Skip
-		MiaoAfter(16.0, ^{ MiaoSendCmd(@"clickad"); });
-		MiaoAfter(19.0, ^{ MiaoSendCmd(@"clickad"); });
-
-		// Skip: bottone abilitato verso fine countdown (~10s). Forziamo enable+click.
-		MiaoAfter(22.0, ^{ MiaoSendCmd(@"skipad"); });
-		MiaoAfter(23.5, ^{ MiaoSendCmd(@"skipad"); });
-		MiaoAfter(25.0, ^{ MiaoSendCmd(@"skipad"); });
-
-		MiaoAfter(27.5, ^{ MiaoSendCmd(@"human"); });
-
-		MiaoAfter(27.5 + watch, ^{
+		MiaoAfter(loopEnd + 16.0 + watch, ^{
 			MiaoSendCmd(@"closeextra");
-			MiaoAfter(1.2, ^{ if (done) done(); });
+			MiaoAfter(1.5, ^{ if (done) done(); });
 		});
 	});
 }
@@ -1183,8 +1415,8 @@ static void MiaoSession(void) {
 	}
 	gSessionBusy = YES;
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog(@"session 0.9.1 uikit-tap");
-	MiaoToast(@"Sessione 0.9.1...");
+	MiaoLog(@"session 0.9.2 adloop");
+	MiaoToast(@"Sessione 0.9.2...");
 	MiaoStep(0, MiaoCycles());
 }
 
@@ -1215,7 +1447,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.9.1 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.9.2 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 

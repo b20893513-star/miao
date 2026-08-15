@@ -8,6 +8,8 @@
 	<real>18</real>
 	<key>Cycles</key>
 	<integer>1</integer>
+	<key>LoopTaps</key>
+	<integer>5</integer>
 	<key>Mode</key>
 	<string>session</string>
 </dict>

@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.9.1
+Version: 0.9.2
 Architecture: iphoneos-arm64
-Description: Human-like UIKit touch synthesis inside Safari (HID only as fallback).
+Description: Ad loop: tap, close the ad tab, return to the site, tap again.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

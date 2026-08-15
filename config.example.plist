@@ -13,6 +13,9 @@
 	<real>12</real>
 	<key>Cycles</key>
 	<integer>3</integer>
+	<!-- Quanti click sul sito fa il loop ads per ogni ciclo -->
+	<key>LoopTaps</key>
+	<integer>5</integer>
 	<key>AllowJSVideoFallback</key>
 	<false/>
 	<key>DisableBackboardHID</key>
