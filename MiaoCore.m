@@ -332,12 +332,147 @@ static BOOL MiaoTrustedTapScreen(CGPoint pt, NSString *label) {
 	return alive;
 }
 
-/// Path principale: coords viewport DOM → schermo → backboardd HID.
+#pragma mark - Calibrazione tap (sonda JS)
+
+/**
+ La conversione viewport→schermo puo' sbagliare (inset barra Safari, zoom, webview
+ piu' alta del viewport visibile). Invece di indovinare: piazziamo un listener JS,
+ tappiamo un punto noto e leggiamo dove il touch e' arrivato davvero.
+ Il delta misurato diventa la correzione, e "nessun touch" dimostra che l'HID non
+ raggiunge il contenuto web.
+ */
+static NSString *const kCalPath = @"/var/mobile/Documents/miao-cal.plist";
+static CGFloat gCalDX = 0;
+static CGFloat gCalDY = 0;
+static BOOL gCalLoaded = NO;
+
+static void MiaoCalLoad(void) {
+	if (gCalLoaded) return;
+	gCalLoaded = YES;
+	NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kCalPath];
+	if (!pl) return;
+	gCalDX = [pl[@"dx"] doubleValue];
+	gCalDY = [pl[@"dy"] doubleValue];
+	MiaoLog([NSString stringWithFormat:@"cal load dx=%.0f dy=%.0f", gCalDX, gCalDY]);
+}
+
+static void MiaoCalSave(CGFloat dx, CGFloat dy) {
+	gCalDX = dx;
+	gCalDY = dy;
+	gCalLoaded = YES;
+	[@{ @"dx": @(dx), @"dy": @(dy), @"ts": @([[NSDate date] timeIntervalSince1970]) }
+		writeToFile:kCalPath atomically:YES];
+	chmod(kCalPath.fileSystemRepresentation, 0666);
+}
+
+static NSString *const kMiaoProbeJS =
+	@"(function(){"
+	@"window.__miaoTap=null;"
+	@"if(window.__miaoProbe) return 'READY';"
+	@"window.__miaoProbe=1;"
+	@"var h=function(e){try{"
+	@"var t=(e.touches&&e.touches[0])||(e.changedTouches&&e.changedTouches[0])||e;"
+	@"window.__miaoTap={x:Math.round(t.clientX),y:Math.round(t.clientY),"
+	@"tr:(e.isTrusted?1:0),ty:e.type,t:Date.now()};"
+	@"}catch(err){}};"
+	@"document.addEventListener('touchstart',h,true);"
+	@"document.addEventListener('mousedown',h,true);"
+	@"document.addEventListener('click',h,true);"
+	@"return 'OK';"
+	@"})()";
+
+static NSString *const kMiaoProbeReadJS =
+	@"(function(){var t=window.__miaoTap;"
+	@"return t?(t.x+','+t.y+'|'+t.tr+'|'+t.ty):'NONE';})()";
+
+static void MiaoInstallProbe(void (^done)(void)) {
+	MiaoJS(kMiaoProbeJS, ^(NSString *r) {
+		MiaoLog([NSString stringWithFormat:@"probe %@", r ?: @"nil"]);
+		if (done) done();
+	});
+}
+
+/// Legge dove e' atterrato l'ultimo touch: CGPointZero se nessuno.
+static void MiaoReadProbe(void (^done)(CGPoint landed, BOOL trusted, NSString *raw)) {
+	MiaoJS(kMiaoProbeReadJS, ^(NSString *r) {
+		if (!r.length || [r hasPrefix:@"NONE"]) {
+			done(CGPointZero, NO, r ?: @"NONE");
+			return;
+		}
+		NSArray *p = [r componentsSeparatedByString:@"|"];
+		CGPoint q = MiaoParseXY(p.firstObject);
+		BOOL tr = p.count > 1 && [p[1] isEqualToString:@"1"];
+		done(q, tr, r);
+	});
+}
+
+/// Path principale: coords viewport DOM → schermo (+ correzione) → HID worker.
 static BOOL MiaoTrustedTapViewport(CGPoint vp, NSString *label) {
 	if (vp.x < 1 && vp.y < 1) return NO;
+	MiaoCalLoad();
 	CGPoint win = MiaoViewportToWindow(vp);
-	MiaoLog([NSString stringWithFormat:@"tap %@ vp=%.0f,%.0f win=%.0f,%.0f", label ?: @"", vp.x, vp.y, win.x, win.y]);
+	win.x += gCalDX;
+	win.y += gCalDY;
+	MiaoLog([NSString stringWithFormat:@"tap %@ vp=%.0f,%.0f win=%.0f,%.0f cal=%.0f,%.0f",
+		label ?: @"", vp.x, vp.y, win.x, win.y, gCalDX, gCalDY]);
 	return MiaoTrustedTapScreen(win, label);
+}
+
+/**
+ Tappa un punto senza link e confronta richiesto vs atterrato.
+ Toast: `CAL ok d=dx,dy` oppure `CAL NO TOUCH` (= HID non arriva alla pagina).
+ */
+static void MiaoActCalib(void) {
+	MiaoToast(@"Calib...");
+	NSString *jsSafe =
+		@"(function(){"
+		@"var W=window.innerWidth,H=window.innerHeight;"
+		@"var ys=[0.5,0.4,0.6,0.3,0.7],xs=[0.5,0.22,0.78];"
+		@"for(var i=0;i<ys.length;i++)for(var j=0;j<xs.length;j++){"
+		@"  var x=Math.round(W*xs[j]),y=Math.round(H*ys[i]);"
+		@"  var el=document.elementFromPoint(x,y);"
+		@"  if(!el) continue;"
+		@"  if(el.closest&&el.closest('a,button,video,iframe,[role=button],[onclick]')) continue;"
+		@"  return x+','+y+'|'+W+','+H+'|'+el.tagName;"
+		@"}"
+		@"return Math.round(W*0.5)+','+Math.round(H*0.5)+'|'+W+','+H+'|FALLBACK';"
+		@"})()";
+
+	MiaoInstallProbe(^{
+		MiaoJS(jsSafe, ^(NSString *r) {
+			if (!r.length) {
+				MiaoToast(@"Calib no point");
+				return;
+			}
+			NSArray *parts = [r componentsSeparatedByString:@"|"];
+			CGPoint vp = MiaoParseXY(parts.firstObject);
+			if (vp.x < 1 && vp.y < 1) {
+				MiaoToast(@"Calib no point");
+				return;
+			}
+			MiaoAck([NSString stringWithFormat:@"calib target %@", r]);
+
+			// tap SENZA correzione: vogliamo misurare l'errore grezzo
+			CGPoint win = MiaoViewportToWindow(vp);
+			MiaoTrustedTapScreen(win, @"calib");
+
+			MiaoAfter(1.3, ^{
+				MiaoReadProbe(^(CGPoint landed, BOOL trusted, NSString *raw) {
+					if (landed.x < 1 && landed.y < 1) {
+						MiaoAck(@"calib NO TOUCH — HID non arriva al web content");
+						MiaoToast(@"CAL NO TOUCH");
+						return;
+					}
+					CGFloat dx = vp.x - landed.x;
+					CGFloat dy = vp.y - landed.y;
+					MiaoCalSave(dx, dy);
+					MiaoAck([NSString stringWithFormat:@"calib ok raw=%@ want=%.0f,%.0f got=%.0f,%.0f d=%.0f,%.0f tr=%d",
+						raw, vp.x, vp.y, landed.x, landed.y, dx, dy, trusted ? 1 : 0]);
+					MiaoToast([NSString stringWithFormat:@"CAL ok d=%.0f,%.0f tr%d", dx, dy, trusted ? 1 : 0]);
+				});
+			});
+		});
+	});
 }
 
 static void MiaoRequestHidTap(CGPoint pt) {
@@ -429,7 +564,6 @@ void MiaoStartHidWorker(void) {
 
 		MiaoLog([NSString stringWithFormat:@"SB-HID screen %.0f,%.0f", sx, sy]);
 		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-			// contextId + BKS + inject: necessario perche' ClientDispatch da SB non arriva a Safari
 			MiaoPerformHumanTapScreen(sx, sy);
 			[@"ok-sb\n" writeToFile:@"/var/mobile/Documents/miao-hid-ack.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
 		});
@@ -509,6 +643,8 @@ static void MiaoActClickVideo(void) {
 			return;
 		}
 		MiaoAck(sc);
+		// sonda attiva: se il tap non naviga sapremo se e' arrivato e dove
+		MiaoInstallProbe(nil);
 		// lascia finire layout dopo scroll
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 			MiaoJS(jsPoint, ^(NSString *result) {
@@ -557,8 +693,18 @@ static void MiaoActClickVideo(void) {
 												stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]];
 										MiaoJS(go, ^(NSString *rr) { MiaoAck(rr ?: @"js"); });
 									} else {
-										MiaoAck(@"tap miss");
-										MiaoToast(@"Miss (HID no nav)");
+										// diagnosi: il touch e' arrivato alla pagina?
+										MiaoReadProbe(^(CGPoint landed, BOOL trusted, NSString *raw) {
+											if (landed.x < 1 && landed.y < 1) {
+												MiaoAck(@"tap miss — nessun touch nel web content (HID non passa)");
+												MiaoToast(@"Miss NO TOUCH");
+											} else {
+												MiaoAck([NSString stringWithFormat:@"tap miss — touch a %@ (voluto %.0f,%.0f)",
+													raw, vp.x, vp.y]);
+												MiaoToast([NSString stringWithFormat:@"Miss @%.0f,%.0f tr%d",
+													landed.x, landed.y, trusted ? 1 : 0]);
+											}
+										});
 									}
 								});
 							});
@@ -847,6 +993,8 @@ static void MiaoHandle(NSString *cmd) {
 		MiaoToast([NSString stringWithFormat:@"Extra %@", @(n)]);
 	} else if ([cmd isEqualToString:@"where"]) {
 		MiaoActWhere(^(NSString *p) { MiaoToast(p ?: @"?"); });
+	} else if ([cmd isEqualToString:@"calib"]) {
+		MiaoActCalib();
 	}
 }
 
@@ -861,10 +1009,10 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.7");
+	MiaoLog(@"safari ready 0.9.0");
 	MiaoToast(@"Miao Safari ON");
 
-	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human", @"closeextra", @"where" ]) {
+	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human", @"closeextra", @"where", @"calib" ]) {
 		NSString *full = [NSString stringWithFormat:@"com.noxlab.miao.%@", n];
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
@@ -949,8 +1097,11 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 
 		MiaoAfter(3.5, ^{ MiaoSendCmd(@"ping"); });
 
+		// Prima sessione: misura l'errore viewport→schermo con la sonda JS
+		if (idx == 0) MiaoAfter(4.6, ^{ MiaoSendCmd(@"calib"); });
+
 		// Tap thumb (trusted) — popunder Exo richiede gesture reale
-		MiaoAfter(7.0, ^{
+		MiaoAfter(8.5, ^{
 			MiaoToast(@"Click thumb...");
 			MiaoSendCmd(@"clickvideo");
 		});
@@ -1007,8 +1158,8 @@ static void MiaoSession(void) {
 	}
 	gSessionBusy = YES;
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog(@"session 0.8.1 backboardd-exec");
-	MiaoToast(@"Sessione 0.8.1...");
+	MiaoLog(@"session 0.9.0 hid+calib");
+	MiaoToast(@"Sessione 0.9.0...");
 	MiaoStep(0, MiaoCycles());
 }
 
@@ -1039,7 +1190,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.6 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.9.0 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 

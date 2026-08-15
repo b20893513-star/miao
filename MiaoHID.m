@@ -49,7 +49,7 @@ static void BBMarkAlive(void) {
 }
 
 static void BBConsume(void) {
-	CGFloat sx = -1, sy = -1, nx = -1, ny = -1;
+	CGFloat sx = -1, sy = -1, nx = -1, ny = -1, sw = 0, sh = 0;
 
 	NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kHidPath2];
 	if (pl[@"x"] && pl[@"y"]) {
@@ -57,6 +57,8 @@ static void BBConsume(void) {
 		sy = [pl[@"y"] doubleValue];
 		nx = [pl[@"nx"] doubleValue];
 		ny = [pl[@"ny"] doubleValue];
+		sw = [pl[@"sw"] doubleValue];
+		sh = [pl[@"sh"] doubleValue];
 		[[NSFileManager defaultManager] removeItemAtPath:kHidPath2 error:nil];
 	}
 
@@ -75,9 +77,11 @@ static void BBConsume(void) {
 	}
 
 	if (sx < 0 && nx >= 0) {
+		if (sw < 100) sw = 414;
+		if (sh < 100) sh = 896;
 		if (nx <= 1.5) {
-			sx = nx * 414.0;
-			sy = ny * 896.0;
+			sx = nx * sw;
+			sy = ny * sh;
 		} else {
 			sx = nx;
 			sy = ny;
