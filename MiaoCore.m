@@ -1,9 +1,10 @@
-﻿#import <Foundation/Foundation.h>
+#import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <notify.h>
-#import "TouchSim.h"`n#import "MiaoCore.h"
+#import "TouchSim.h"
+#import "MiaoCore.h"
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
@@ -261,7 +262,7 @@ static void MiaoActClickVideo(void) {
 		}
 		CGPoint pt = MiaoParseXY(result);
 		MiaoAck([NSString stringWithFormat:@"click target %@", result]);
-		// Un solo gesto umano (non doppio JS click â€” solo HID)
+		// Un solo gesto umano (non doppio JS click -> solo HID)
 		MiaoHumanTapAt(pt, ^{
 			MiaoAck(@"click HID done");
 		});
@@ -463,9 +464,9 @@ void MiaoStartSafari(void) {
  Flusso umano:
  1 HOME + wait load
  2 HID tap thumb (gesto dito)
- 3 wait â†’ where: se /video/ ok; ritenta 1 tap
+ 3 wait -> where: se /video/ ok; ritenta 1 tap
  4 close ads non-nox
- 5 wait 10.5s â†’ Skip HID
+ 5 wait 10.5s -> Skip HID
  6 human seek/scroll
  7 close extra
  */
@@ -503,7 +504,7 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 		MiaoSendCmd(@"closeads");
 	});
 
-	// Skip: ~10s dopo essere sul video (dal 2Â° tap ~13 â†’ +11 = 24)
+	// Skip: ~10s dopo essere sul video (dal 2->tap ~13 -> +11 = 24)
 	MiaoAfter(24.0, ^{
 		MiaoToast(@"Aspetta Skip...");
 	});

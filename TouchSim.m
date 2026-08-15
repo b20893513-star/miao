@@ -1,4 +1,4 @@
-﻿#import "TouchSim.h"
+#import "TouchSim.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>

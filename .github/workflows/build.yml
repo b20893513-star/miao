@@ -68,8 +68,11 @@ jobs:
           set -e
           if [ "$rc" -ne 0 ]; then
             echo "===== BUILD ERRORS (tail) ====="
-            tail -n 80 build.log || true
-            grep -E "error:|Error:|fatal|undefined" build.log | tail -n 40 || true
+            tail -n 100 build.log || true
+            # Annotazioni pubbliche (visibili senza login)
+            grep -E "error:|Error:|fatal error|undefined reference|logos|Logos" build.log | tail -n 30 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
             exit "$rc"
           fi
           ls -la packages/
