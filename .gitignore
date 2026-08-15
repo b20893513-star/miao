@@ -3,3 +3,9 @@ packages/
 .DS_Store
 *.deb
 theos/
+
+artifacts.json
+ci-job.log
+scripts/_ssh_probe.py
+scripts/phone-authorized_keys
+
