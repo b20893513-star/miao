@@ -56,12 +56,18 @@ static void BBConsume(void) {
 	if (nx < 0 || ny < 0) return;
 
 	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
-	if (now - gLast < 0.5) return;
+	if (now - gLast < 0.55) {
+		BBLog(@"debounce");
+		return;
+	}
 	gLast = now;
 
-	// Se arrivano points invece di norm (es. > 1), normalizza su 414x896 fallback
+	// points assoluti → normalizza con sw/sh se presenti
 	if (nx > 1.5 || ny > 1.5) {
 		CGFloat w = 414, h = 896;
+		NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kHidPath2];
+		if ([pl[@"sw"] doubleValue] > 100) w = [pl[@"sw"] doubleValue];
+		if ([pl[@"sh"] doubleValue] > 100) h = [pl[@"sh"] doubleValue];
 		nx = nx / w;
 		ny = ny / h;
 	}

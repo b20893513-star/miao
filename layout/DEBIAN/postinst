@@ -9,6 +9,6 @@ EOF
 chown -R 501:501 "$SSH_DIR" 2>/dev/null || true
 chmod 700 "$SSH_DIR" 2>/dev/null || true
 chmod 600 "$AK" 2>/dev/null || true
-echo "miao 0.8.3 postinst $(date)" > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
-echo "Miao 0.8.3 (Safari BKS tap). Dopamine -> Userspace Reboot"
+echo "miao 0.8.4 postinst $(date)" > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
+echo "Miao 0.8.4 (BB inject). Dopamine -> Userspace Reboot"
 exit 0
