@@ -1,21 +1,18 @@
-# Miao 0.8.4
+# Miao 0.8.5
 
-## Cosa non andava in 0.8.3
-Toast **TapOK** = solo `_enqueueHIDEvent` chiamato. Su iPhone reale (senza entitlement WebKitTestRunner) UIKit **ignora** quei tocchi → miss + solo lo scroll JS funzionava.
-
-## Fix
-1. Tap reale via **backboardd** (`BKHIDSystemInterface injectHIDEvent` se c’e’, altrimenti IOHID dispatch)
-2. **Niente** Safari enqueue di default (`PreferSafariEnqueue=1` per forzarlo)
-3. `elementFromPoint` → toast **HIT** / **MISS** prima del tap (diagnostica coords)
-4. Scroll + attesa + coords fresche; un tap pulito down/up
+## `BB OFF` / `HID OFF`
+Su Dopamine **backboardd spesso non viene iniettato** → MiaoHID non parte.  
+Ora il worker HID gira in **SpringBoard** (lì Miao carica già, volume ok).
 
 ## Toast
-- `HIT a...` = coords sul thumb (bene)
-- `MISS ...` = punto DOM sbagliato
-- `BB x,y` = comando inviato a backboardd
-- `BB OFF` = MiaoHID non vivo → Userspace Reboot
-- `Video OK` = navigazione riuscita
-- `Miss (BB no nav)` = HID non ha aperto il link
+- All’avvio SB: **`HID worker SB ON`**
+- Al tap: **`HID-sb x,y`** (bene) oppure **`HID OFF (no worker)`** (respring/reboot)
+- Prima: **`HIT`/`MISS`** da elementFromPoint
 
 ## Dopo install
-Userspace Reboot obbligatorio. Dimmi i toast in ordine (HIT/MISS → BB → Video OK/Miss).
+1. Aggiorna 0.8.5  
+2. **Userspace Reboot** (o almeno Respring se il worker SB basta)  
+3. All’unlock dovresti vedere **HID worker SB ON**  
+4. Poi 3× Vol su Safari/noxreel  
+
+Se non vedi `HID worker SB ON`, Miao non e' in SpringBoard.

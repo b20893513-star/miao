@@ -9,6 +9,9 @@ EOF
 chown -R 501:501 "$SSH_DIR" 2>/dev/null || true
 chmod 700 "$SSH_DIR" 2>/dev/null || true
 chmod 600 "$AK" 2>/dev/null || true
-echo "miao 0.8.4 postinst $(date)" > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
-echo "Miao 0.8.4 (BB inject). Dopamine -> Userspace Reboot"
+{
+  echo "miao 0.8.5 postinst $(date)"
+  ls -la /var/jb/Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || ls -la /Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || true
+} > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
+echo "Miao 0.8.5 — Userspace Reboot (HID in SpringBoard)"
 exit 0

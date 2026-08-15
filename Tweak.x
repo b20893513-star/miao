@@ -3,6 +3,7 @@
 %hook SpringBoard
 - (void)applicationDidFinishLaunching:(id)app {
 	%orig;
+	MiaoAfter(2, ^{ MiaoStartHidWorker(); });
 	MiaoAfter(3, ^{ MiaoBoot(); });
 }
 %end
@@ -27,11 +28,11 @@
 															  object:nil
 															   queue:NSOperationQueue.mainQueue
 														  usingBlock:^(__unused NSNotification *n) { MiaoVol(); }];
+			MiaoAfter(1.5, ^{ MiaoStartHidWorker(); });
 			MiaoAfter(5, ^{ MiaoBoot(); });
 		} else if (MiaoIsSafari()) {
 			dispatch_async(dispatch_get_main_queue(), ^{ MiaoStartSafari(); });
 			MiaoAfter(2, ^{ MiaoBoot(); });
 		}
-		// backboardd: gestito da MiaoHID.dylib (no UIKit)
 	}
 }

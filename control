@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.8.4
+Version: 0.8.5
 Architecture: iphoneos-arm64
-Description: Fix false TapOK; backboardd BKHID inject; elementFromPoint coord check.
+Description: HID worker in SpringBoard (Dopamine often skips backboardd inject).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

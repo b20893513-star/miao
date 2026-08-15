@@ -4,8 +4,10 @@
 #import <objc/message.h>
 #import <notify.h>
 #import <unistd.h>
+#import <sys/stat.h>
 #import "MiaoCore.h"
 #import "TouchSimSafari.h"
+#import "TouchSimBB.h"
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
@@ -20,9 +22,13 @@ static NSString *const kCmdPath = @"/var/mobile/Documents/miao-cmd.txt";
 static NSString *const kAckPath = @"/var/mobile/Documents/miao-ack.txt";
 static NSString *const kLogPath = @"/var/mobile/Documents/miao-loaded.txt";
 static NSString *const kHidPath = @"/var/tmp/miao-hid.txt";
+static NSString *const kHidPathDoc = @"/var/mobile/Documents/miao-hid.txt";
 static NSString *const kHidPlist = @"/var/mobile/Library/Preferences/com.noxlab.miao.hid.plist";
 static NSString *const kBbAlivePath = @"/var/tmp/miao-bb-alive.txt";
+static NSString *const kHidAliveDoc = @"/var/mobile/Documents/miao-hid-alive.txt";
 static NSString *const kBbAlivePlist = @"/var/mobile/Library/Preferences/com.noxlab.miao.bb.plist";
+static BOOL gHidWorkerStarted = NO;
+static NSTimeInterval gLastHidExec = 0;
 BOOL MiaoIsBackboardd(void);
 BOOL MiaoIsSafari(void);
 BOOL MiaoIsSB(void);
@@ -220,14 +226,29 @@ static CGPoint MiaoParseXY(NSString *s) {
 	return CGPointMake([p[0] doubleValue], [p[1] doubleValue]);
 }
 
-static BOOL MiaoBbAlive(void) {
-	if ([[NSFileManager defaultManager] fileExistsAtPath:kBbAlivePath]) return YES;
+static BOOL MiaoHidAlive(void) {
+	for (NSString *path in @[ kHidAliveDoc, kBbAlivePath ]) {
+		if ([[NSFileManager defaultManager] fileExistsAtPath:path]) return YES;
+	}
 	NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kBbAlivePlist];
 	if ([pl[@"alive"] boolValue]) {
 		NSTimeInterval ts = [pl[@"ts"] doubleValue];
-		if ([[NSDate date] timeIntervalSince1970] - ts < 30.0) return YES;
+		if ([[NSDate date] timeIntervalSince1970] - ts < 45.0) return YES;
+	}
+	int token = 0;
+	uint64_t state = 0;
+	if (notify_register_check("com.noxlab.miao.hid.alive", &token) == NOTIFY_STATUS_OK) {
+		notify_get_state(token, &state);
+		if (state != 0) return YES;
 	}
 	return NO;
+}
+
+static NSString *MiaoHidWho(void) {
+	NSString *s = [NSString stringWithContentsOfFile:kHidAliveDoc encoding:NSUTF8StringEncoding error:nil];
+	if (!s.length) s = [NSString stringWithContentsOfFile:kBbAlivePath encoding:NSUTF8StringEncoding error:nil];
+	s = [s stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	return s.length ? s : @"?";
 }
 
 /// getBoundingClientRect (viewport WK) → punti finestra Safari.
@@ -249,11 +270,11 @@ static CGPoint MiaoViewportToWindow(CGPoint vp) {
 	return p;
 }
 
-/// Chiede HID a backboardd (coords GIA' schermo/finestra → normalizzate).
+/// Chiede HID (coords schermo → normalizzate). Scrive tmp + Documents (Safari legge entrambi).
 static void MiaoRequestHidTapScreen(CGPoint pt) {
 	id dis = MiaoPrefs()[@"DisableBackboardHID"];
 	if (dis && [dis boolValue]) {
-		MiaoLog(@"HID bb disabled by prefs");
+		MiaoLog(@"HID disabled by prefs");
 		return;
 	}
 	CGRect b = UIScreen.mainScreen.bounds;
@@ -263,7 +284,10 @@ static void MiaoRequestHidTapScreen(CGPoint pt) {
 	CGFloat nx = pt.x / b.size.width;
 	CGFloat ny = pt.y / b.size.height;
 	NSString *body = [NSString stringWithFormat:@"%.5f,%.5f\n%.0f", nx, ny, [[NSDate date] timeIntervalSince1970]];
-	[body writeToFile:kHidPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	for (NSString *path in @[ kHidPath, kHidPathDoc ]) {
+		[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		chmod(path.fileSystemRepresentation, 0666);
+	}
 	[@{
 		@"nx": @(nx),
 		@"ny": @(ny),
@@ -273,12 +297,13 @@ static void MiaoRequestHidTapScreen(CGPoint pt) {
 		@"sh": @(b.size.height),
 		@"ts": @([[NSDate date] timeIntervalSince1970])
 	} writeToFile:kHidPlist atomically:YES];
+	chmod(kHidPlist.fileSystemRepresentation, 0666);
 	notify_post("com.noxlab.miao.hidtap");
-	MiaoLog([NSString stringWithFormat:@"hid-bb-req pt=%.0f,%.0f norm=%.3f,%.3f bb=%d", pt.x, pt.y, nx, ny, MiaoBbAlive() ? 1 : 0]);
+	MiaoLog([NSString stringWithFormat:@"hid-req pt=%.0f,%.0f norm=%.3f,%.3f alive=%d who=%@",
+		pt.x, pt.y, nx, ny, MiaoHidAlive() ? 1 : 0, MiaoHidWho()]);
 }
 
 /// `pt` gia' in coordinate schermo.
-/// NB: _enqueueHIDEvent in Safari spesso e' NO-OP su device (no entitlement) → non fidarsi.
 static BOOL MiaoTrustedTapScreen(CGPoint pt, NSString *label) {
 	CGRect b = UIScreen.mainScreen.bounds;
 	if (b.size.width < 1) b = CGRectMake(0, 0, 414, 896);
@@ -286,21 +311,20 @@ static BOOL MiaoTrustedTapScreen(CGPoint pt, NSString *label) {
 	pt.y = MAX(2, MIN(b.size.height - 2, pt.y));
 	MiaoLog([NSString stringWithFormat:@"tapScreen %@ %.0f,%.0f", label ?: @"", pt.x, pt.y]);
 
-	BOOL bb = MiaoBbAlive();
 	MiaoRequestHidTapScreen(pt);
 
-	// Safari enqueue solo se PreferSafariEnqueue=1 (di default OFF: su device e' illusorio)
 	id prefer = MiaoPrefs()[@"PreferSafariEnqueue"];
 	if (prefer && [prefer boolValue] && MiaoIsSafari()) {
 		MiaoSafariTrustedTapWindow(pt.x, pt.y);
 	}
 
-	if (bb) {
-		MiaoToast([NSString stringWithFormat:@"BB %.0f,%.0f", pt.x, pt.y]);
+	BOOL alive = MiaoHidAlive();
+	if (alive) {
+		MiaoToast([NSString stringWithFormat:@"HID-%@ %.0f,%.0f", MiaoHidWho(), pt.x, pt.y]);
 	} else {
-		MiaoToast(@"BB OFF — reboot?");
+		MiaoToast(@"HID OFF (no worker)");
 	}
-	return bb;
+	return alive;
 }
 
 /// Path principale: coords viewport DOM → schermo → backboardd HID.
@@ -328,7 +352,83 @@ static void MiaoHumanTapAt(CGPoint pt, void (^done)(void)) {
 }
 
 void MiaoStartBackboardd(void) {
-	MiaoLog(@"MiaoStartBackboardd noop (use MiaoHID.dylib)");
+	MiaoLog(@"MiaoStartBackboardd noop");
+}
+
+/// HID worker in SpringBoard: su Dopamine backboardd spesso NON viene iniettato.
+/// SB invece carica Miao.dylib → qui eseguiamo i tap.
+void MiaoStartHidWorker(void) {
+	if (gHidWorkerStarted) return;
+	if (!MiaoIsSB()) return;
+	gHidWorkerStarted = YES;
+
+	void (^mark)(void) = ^{
+		NSString *body = @"sb\n";
+		for (NSString *path in @[ kHidAliveDoc, kBbAlivePath ]) {
+			[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+			chmod(path.fileSystemRepresentation, 0666);
+		}
+		[@{ @"alive": @YES, @"who": @"sb", @"ts": @([[NSDate date] timeIntervalSince1970]) }
+			writeToFile:kBbAlivePlist atomically:YES];
+		chmod(kBbAlivePlist.fileSystemRepresentation, 0666);
+		int tok = 0;
+		if (notify_register_check("com.noxlab.miao.hid.alive", &tok) == NOTIFY_STATUS_OK)
+			notify_set_state(tok, 1);
+	};
+
+	void (^consume)(void) = ^{
+		CGFloat nx = -1, ny = -1;
+		for (NSString *path in @[ kHidPath, kHidPathDoc ]) {
+			NSString *raw = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+			if (raw.length < 3) continue;
+			[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+			NSString *line = [[raw componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] firstObject];
+			NSArray *p = [line componentsSeparatedByString:@","];
+			if (p.count >= 2) {
+				nx = [p[0] doubleValue];
+				ny = [p[1] doubleValue];
+				break;
+			}
+		}
+		if (nx < 0) {
+			NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:kHidPlist];
+			if (pl[@"nx"]) {
+				nx = [pl[@"nx"] doubleValue];
+				ny = [pl[@"ny"] doubleValue];
+				[[NSFileManager defaultManager] removeItemAtPath:kHidPlist error:nil];
+			}
+		}
+		if (nx < 0) return;
+		if (nx > 1.5) { nx /= 414.0; ny /= 896.0; }
+
+		NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+		if (now - gLastHidExec < 0.55) return;
+		gLastHidExec = now;
+
+		MiaoLog([NSString stringWithFormat:@"SB-HID exec %.3f,%.3f", nx, ny]);
+		// fuori dal main per non bloccare SB
+		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+			MiaoPerformHumanTapNorm(nx, ny);
+			[@"ok-sb\n" writeToFile:@"/var/mobile/Documents/miao-hid-ack.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		});
+	};
+
+	mark();
+	MiaoLog(@"HID worker online (SpringBoard)");
+	MiaoToast(@"HID worker SB ON");
+
+	int token = 0;
+	notify_register_dispatch("com.noxlab.miao.hidtap", &token,
+		dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),
+		^(__unused int t) { consume(); });
+
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+		while (YES) {
+			mark();
+			consume();
+			usleep(350000);
+		}
+	});
 }
 
 #pragma mark - Safari actions (human)
@@ -917,7 +1017,7 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.4 - 3x Vol");
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.8.5 - 3x Vol");
 	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 

@@ -7,6 +7,7 @@ void MiaoVol(void);
 void MiaoBoot(void);
 void MiaoStartSafari(void);
 void MiaoStartBackboardd(void);
+void MiaoStartHidWorker(void);
 BOOL MiaoIsSB(void);
 BOOL MiaoIsSafari(void);
 BOOL MiaoIsBackboardd(void);
