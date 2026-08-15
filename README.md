@@ -1,18 +1,22 @@
-# Miao 0.7
+# Miao 0.8 — tap trusted via backboardd
 
-## Realta' sul device
-I tap HID **non aprono** i link in Safari/WKWebView (solo lo scroll JS funzionava).
+## Idea
+Safari/JS da solo **non** apre i popunder Exo.  
+I tocchi “veri” li manda **backboardd** (come il dito).
 
-## Cosa fa 0.7
-1. HOME  
-2. **JS** `location.assign(/video/...)` (+ tentativo click)  
-3. **Backup** `openURL` dello stesso video da SpringBoard  
-4. **Skip** con `button.click()` JS (non HID)  
-5. Seek +10 + scroll  
-6. Chiudi schede ads (best effort)  
-
-I popunder Exo (scheda ads al tap) restano difficili senza dito reale: qui almeno **entri nel video e skippi**.
+Flusso:
+1. Safari legge coordinate del thumb dal DOM  
+2. Scrive `miao-hid.txt` + notify  
+3. **backboardd** esegue gesto HID (down/move/up)  
+4. Se dopo ~3s non sei su `/video/`, fallback JS  
 
 ## Install
-Sileo refresh → Miao **0.7.0**  
-oppure https://b20893513-star.github.io/miao/miao-latest.deb
+Sileo → **0.8.0** → **Userspace Reboot** (obbligatorio: carica anche backboardd)
+
+## Test
+3× Volume. Toast: `HID x,y`.  
+Se parte la **scheda ads** → ci siamo.  
+Se schermo nero: prefs `DisableBackboardHID=1` oppure reinstalla 0.7.1.
+
+## Log
+`/var/mobile/Documents/miao-loaded.txt` — cerca `hid-req` / `hid-exec` / `backboardd`

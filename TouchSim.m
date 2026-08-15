@@ -1,7 +1,5 @@
 #import "TouchSim.h"
 #import <UIKit/UIKit.h>
-#import <objc/runtime.h>
-#import <objc/message.h>
 #import <dlfcn.h>
 #import <mach/mach_time.h>
 #import <unistd.h>
@@ -40,6 +38,7 @@ static bool MiaoLoadIOHID(void) {
 	static bool ok = false;
 	dispatch_once(&onceToken, ^{
 		void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+		if (!iokit) iokit = dlopen("/System/Library/PrivateFrameworks/IOKit.framework/IOKit", RTLD_LAZY);
 		if (!iokit) return;
 		p_CreateDigitizerEvent = (typeof(p_CreateDigitizerEvent))dlsym(iokit, "IOHIDEventCreateDigitizerEvent");
 		p_CreateDigitizerFingerEvent = (typeof(p_CreateDigitizerFingerEvent))dlsym(iokit, "IOHIDEventCreateDigitizerFingerEvent");
@@ -86,9 +85,9 @@ static void MiaoDispatchDigitizer(IOHIDFloat nx, IOHIDFloat ny, BOOL touching, I
 	}
 
 	if (p_SetFloatValue) {
-		IOHIDFloat radius = touching ? 0.04f + (pressure * 0.02f) : 0.02f;
+		IOHIDFloat radius = touching ? 0.045f + (pressure * 0.02f) : 0.02f;
 		p_SetFloatValue(child, (uint32_t)kIOHIDEventFieldDigitizerMajorRadius, radius);
-		p_SetFloatValue(child, (uint32_t)kIOHIDEventFieldDigitizerMinorRadius, radius * 0.9f);
+		p_SetFloatValue(child, (uint32_t)kIOHIDEventFieldDigitizerMinorRadius, radius * 0.92f);
 		p_SetFloatValue(child, (uint32_t)kIOHIDEventFieldDigitizerPressure, touching ? pressure : 0.f);
 	}
 
@@ -96,7 +95,6 @@ static void MiaoDispatchDigitizer(IOHIDFloat nx, IOHIDFloat ny, BOOL touching, I
 	CFRelease(child);
 
 	if (p_SetSenderID) {
-		// Sender tipico touch digitizer
 		p_SetSenderID(parent, 0x800000000000027FULL);
 	}
 
@@ -115,67 +113,64 @@ static void MiaoNorm(CGFloat x, CGFloat y, IOHIDFloat *nx, IOHIDFloat *ny) {
 	*ny = MAX(0.04f, MIN(0.98f, *ny));
 }
 
+static BOOL MiaoHIDProcessAllowed(void) {
+	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
+	// backboardd = tocchi di sistema (trusted). Safari = fallback debole.
+	return [bid isEqualToString:@"com.apple.backboardd"] || [bid isEqualToString:@"com.apple.mobilesafari"];
+}
+
 void MiaoPerformTapWithDuration(CGFloat x, CGFloat y, NSTimeInterval duration) {
+	if (!MiaoHIDProcessAllowed()) return;
 	IOHIDFloat nx, ny;
 	MiaoNorm(x, y, &nx, &ny);
 	NSLog(@"[Miao] tap norm=(%.3f, %.3f) %@", nx, ny, NSBundle.mainBundle.bundleIdentifier ?: @"?");
-	MiaoDispatchDigitizer(nx, ny, YES, 0.6f);
-	useconds_t us = (useconds_t)MAX(50000.0, duration * 1000000.0);
+	MiaoDispatchDigitizer(nx, ny, YES, 0.65f);
+	useconds_t us = (useconds_t)MAX(55000.0, duration * 1000000.0);
 	usleep(us);
 	MiaoDispatchDigitizer(nx, ny, NO, 0.f);
 }
 
 void MiaoPerformTap(CGFloat x, CGFloat y) {
-	MiaoPerformTapWithDuration(x, y, 0.08);
+	MiaoPerformTapWithDuration(x, y, 0.09);
 }
 
-/// Gesto umano: avvicinamento, down, 2 micro-move, up con pressione variabile.
 void MiaoPerformHumanTap(CGFloat x, CGFloat y) {
-	NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"";
-	if (![bid isEqualToString:@"com.apple.mobilesafari"]) {
-		NSLog(@"[Miao] HumanTap RIFIUTATO fuori Safari (%@)", bid);
+	if (!MiaoHIDProcessAllowed()) {
+		NSLog(@"[Miao] HumanTap refused in %@", NSBundle.mainBundle.bundleIdentifier ?: @"?");
 		return;
 	}
 
 	CGRect b = UIScreen.mainScreen.bounds;
 	if (b.size.width < 1) b = CGRectMake(0, 0, 414, 896);
 
-	// Jitter naturale ┬▒2ÔÇô5 pt
 	CGFloat jx = (CGFloat)(arc4random_uniform(7)) - 3.f;
 	CGFloat jy = (CGFloat)(arc4random_uniform(7)) - 3.f;
 	CGFloat tx = MAX(10, MIN(b.size.width - 10, x + jx));
-	CGFloat ty = MAX(50, MIN(b.size.height - 10, y + jy));
+	CGFloat ty = MAX(40, MIN(b.size.height - 10, y + jy));
 
 	IOHIDFloat nx, ny;
 	MiaoNorm(tx, ty, &nx, &ny);
-
-	// Punto di partenza leggermente offset (dito che arriva)
 	IOHIDFloat nx0 = MAX(0.02f, MIN(0.98f, nx + (((int)arc4random_uniform(5) - 2) * 0.002f)));
 	IOHIDFloat ny0 = MAX(0.04f, MIN(0.98f, ny + (((int)arc4random_uniform(5) - 2) * 0.002f)));
 
-	NSLog(@"[Miao] humanTap (%.0f,%.0f) norm=(%.3f,%.3f)", tx, ty, nx, ny);
+	NSLog(@"[Miao] humanTap via %@ (%.0f,%.0f)", NSBundle.mainBundle.bundleIdentifier ?: @"?", tx, ty);
 
-	// Hover/contact approach
-	MiaoDispatchDigitizer(nx0, ny0, YES, 0.25f);
-	usleep(18000 + arc4random_uniform(12000));
-
-	// Press pi├╣ forte sul target
-	MiaoDispatchDigitizer(nx, ny, YES, 0.75f);
-	usleep(35000 + arc4random_uniform(25000));
-
-	// Micro-move 1 (tremolio dito)
-	IOHIDFloat nx1 = MAX(0.02f, MIN(0.98f, nx + 0.0015f));
-	IOHIDFloat ny1 = MAX(0.04f, MIN(0.98f, ny + 0.0010f));
-	MiaoDispatchDigitizer(nx1, ny1, YES, 0.85f);
-	usleep(25000 + arc4random_uniform(20000));
-
-	// Micro-move 2
-	IOHIDFloat nx2 = MAX(0.02f, MIN(0.98f, nx - 0.0010f));
-	IOHIDFloat ny2 = MAX(0.04f, MIN(0.98f, ny + 0.0005f));
-	MiaoDispatchDigitizer(nx2, ny2, YES, 0.70f);
-	usleep(30000 + arc4random_uniform(30000));
-
-	// Lift
-	MiaoDispatchDigitizer(nx2, ny2, NO, 0.f);
+	MiaoDispatchDigitizer(nx0, ny0, YES, 0.28f);
 	usleep(20000 + arc4random_uniform(15000));
+
+	MiaoDispatchDigitizer(nx, ny, YES, 0.78f);
+	usleep(40000 + arc4random_uniform(30000));
+
+	IOHIDFloat nx1 = MAX(0.02f, MIN(0.98f, nx + 0.0018f));
+	IOHIDFloat ny1 = MAX(0.04f, MIN(0.98f, ny + 0.0012f));
+	MiaoDispatchDigitizer(nx1, ny1, YES, 0.88f);
+	usleep(28000 + arc4random_uniform(22000));
+
+	IOHIDFloat nx2 = MAX(0.02f, MIN(0.98f, nx - 0.0012f));
+	IOHIDFloat ny2 = MAX(0.04f, MIN(0.98f, ny + 0.0008f));
+	MiaoDispatchDigitizer(nx2, ny2, YES, 0.72f);
+	usleep(35000 + arc4random_uniform(35000));
+
+	MiaoDispatchDigitizer(nx2, ny2, NO, 0.f);
+	usleep(25000 + arc4random_uniform(20000));
 }

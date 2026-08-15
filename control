@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.7.1
+Version: 0.8.0
 Architecture: iphoneos-arm64
-Description: Click ads (Exo/CTA) + force Skip (incl. iframe /x/pr).
+Description: Trusted HID taps via backboardd (human-like). Safari sends coords.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

@@ -20,7 +20,8 @@
 
 %ctor {
 	@autoreleasepool {
-		MiaoLog([@"ctor " stringByAppendingString:(NSBundle.mainBundle.bundleIdentifier ?: @"?")]);
+		NSString *bid = NSBundle.mainBundle.bundleIdentifier ?: @"?";
+		MiaoLog([@"ctor " stringByAppendingString:bid]);
 		if (MiaoIsSB()) {
 			[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
 															  object:nil
@@ -30,6 +31,9 @@
 		} else if (MiaoIsSafari()) {
 			dispatch_async(dispatch_get_main_queue(), ^{ MiaoStartSafari(); });
 			MiaoAfter(2, ^{ MiaoBoot(); });
+		} else if (MiaoIsBackboardd()) {
+			MiaoStartBackboardd();
+			MiaoLog(@"backboardd HID online");
 		}
 	}
 }
