@@ -2,7 +2,6 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <CoreFoundation/CoreFoundation.h>
 #import <notify.h>
 #import "TouchSim.h"
 
@@ -13,27 +12,29 @@ static BOOL gBootDone = NO;
 static BOOL gSessionBusy = NO;
 static BOOL gSafariPollStarted = NO;
 
-static NSString *const kMiaoPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
-static NSString *const kMiaoDefaultHome = @"https://noxreel.uk/";
-static NSString *const kMiaoCmdPath = @"/var/mobile/Documents/miao-cmd.txt";
-static NSString *const kMiaoAckPath = @"/var/mobile/Documents/miao-ack.txt";
-static NSString *const kMiaoLogPath = @"/var/mobile/Documents/miao-loaded.txt";
+static NSString *const kPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
+static NSString *const kHomeDefault = @"https://noxreel.uk/";
+static NSString *const kCmdPath = @"/var/mobile/Documents/miao-cmd.txt";
+static NSString *const kAckPath = @"/var/mobile/Documents/miao-ack.txt";
+static NSString *const kLogPath = @"/var/mobile/Documents/miao-loaded.txt";
 
-#pragma mark - Utils
+#pragma mark - Log / Toast
 
-static void MiaoMarker(NSString *note) {
+static void MiaoLog(NSString *note) {
 	NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], note ?: @""];
-	NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kMiaoLogPath];
+	NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kLogPath];
 	if (!fh) {
-		[line writeToFile:kMiaoLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		[line writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 		return;
 	}
-	[fh seekToEndOfFile];
-	[fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+	@try {
+		[fh seekToEndOfFile];
+		[fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+	} @catch (NSException *ex) { (void)ex; }
 	[fh closeFile];
 }
 
-static __weak UILabel *gToastLab = nil;
+static __weak UILabel *gToast = nil;
 
 static void MiaoToast(NSString *text) {
 	dispatch_async(dispatch_get_main_queue(), ^{
@@ -41,20 +42,23 @@ static void MiaoToast(NSString *text) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 		win = UIApplication.sharedApplication.keyWindow;
+		if (!win) win = UIApplication.sharedApplication.windows.firstObject;
 #pragma clang diagnostic pop
 		if (!win) {
-			for (UIWindow *w in UIApplication.sharedApplication.windows) {
-				if (w.isKeyWindow) { win = w; break; }
+			for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+				if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+				for (UIWindow *w in ((UIWindowScene *)sc).windows) {
+					if (w.isKeyWindow) { win = w; break; }
+				}
+				if (!win && ((UIWindowScene *)sc).windows.count)
+					win = ((UIWindowScene *)sc).windows.firstObject;
+				if (win) break;
 			}
 		}
-		if (!win && UIApplication.sharedApplication.windows.count) {
-			win = UIApplication.sharedApplication.windows.firstObject;
-		}
 		if (!win) return;
-
-		[gToastLab removeFromSuperview];
+		[gToast removeFromSuperview];
 		UILabel *lab = [[UILabel alloc] initWithFrame:CGRectZero];
-		lab.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.85];
+		lab.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.88];
 		lab.textColor = UIColor.whiteColor;
 		lab.font = [UIFont boldSystemFontOfSize:14];
 		lab.textAlignment = NSTextAlignmentCenter;
@@ -63,44 +67,45 @@ static void MiaoToast(NSString *text) {
 		lab.numberOfLines = 3;
 		lab.text = [NSString stringWithFormat:@"  %@  ", text];
 		[lab sizeToFit];
-		CGFloat w = MAX(220, lab.bounds.size.width + 28);
-		CGFloat h = MAX(40, lab.bounds.size.height + 14);
-		lab.frame = CGRectMake((win.bounds.size.width - w) / 2.0, 56, w, h);
+		CGFloat w = MAX(230, lab.bounds.size.width + 24);
+		CGFloat h = MAX(42, lab.bounds.size.height + 12);
+		lab.frame = CGRectMake((win.bounds.size.width - w) / 2.0, 52, w, h);
 		[win addSubview:lab];
-		gToastLab = lab;
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			if (gToastLab == lab) [lab removeFromSuperview];
+		gToast = lab;
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+			if (gToast == lab) [lab removeFromSuperview];
 		});
 	});
 }
 
+static void MiaoAck(NSString *msg) {
+	NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], msg ?: @""];
+	[line writeToFile:kAckPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	MiaoLog([NSString stringWithFormat:@"ack %@", msg]);
+}
+
+#pragma mark - Prefs / process
+
 static NSDictionary *MiaoPrefs(void) {
-	return [NSDictionary dictionaryWithContentsOfFile:kMiaoPrefPath] ?: @{};
+	return [NSDictionary dictionaryWithContentsOfFile:kPrefPath] ?: @{};
 }
 
 static NSString *MiaoHomeURL(void) {
 	NSString *u = MiaoPrefs()[@"HomeURL"];
-	if ([u isKindOfClass:[NSString class]] && u.length > 4) return u;
-	return kMiaoDefaultHome;
+	return ([u isKindOfClass:[NSString class]] && u.length > 4) ? u : kHomeDefault;
 }
 
-static NSTimeInterval MiaoWaitSeconds(void) {
-	id v = MiaoPrefs()[@"WaitSeconds"];
-	double s = v ? [v doubleValue] : 16.0;
-	if (s < 8.0) s = 8.0;
-	if (s > 180.0) s = 180.0;
-	return s;
+static NSTimeInterval MiaoWatchSec(void) {
+	double s = MiaoPrefs()[@"WaitSeconds"] ? [MiaoPrefs()[@"WaitSeconds"] doubleValue] : 14.0;
+	return MAX(8.0, MIN(120.0, s));
 }
 
 static NSInteger MiaoCycles(void) {
-	id v = MiaoPrefs()[@"Cycles"];
-	NSInteger n = v ? [v integerValue] : 1;
-	if (n < 1) n = 1;
-	if (n > 20) n = 20;
-	return n;
+	NSInteger n = MiaoPrefs()[@"Cycles"] ? [MiaoPrefs()[@"Cycles"] integerValue] : 1;
+	return MAX(1, MIN(10, n));
 }
 
-static BOOL MiaoIsSpringBoard(void) {
+static BOOL MiaoIsSB(void) {
 	return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.springboard"];
 }
 
@@ -108,225 +113,223 @@ static BOOL MiaoIsSafari(void) {
 	return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"com.apple.mobilesafari"];
 }
 
-#pragma mark - Open URL
+#pragma mark - Open
 
-static BOOL MiaoOpenURLString(NSString *urlStr) {
-	if (urlStr.length == 0) return NO;
+static void MiaoOpenURL(NSString *urlStr) {
 	NSURL *url = [NSURL URLWithString:urlStr];
-	if (!url) return NO;
-	MiaoMarker([NSString stringWithFormat:@"openURL %@", urlStr]);
-	id app = [UIApplication sharedApplication];
-	[app openURL:url options:@{} completionHandler:nil];
-	return YES;
+	if (!url) return;
+	MiaoLog([NSString stringWithFormat:@"openURL %@", urlStr]);
+	[[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
-static BOOL MiaoOpenBundleID(NSString *bid) {
+static void MiaoOpenSafari(void) {
 	Class wsCls = NSClassFromString(@"LSApplicationWorkspace");
-	if (!wsCls) return NO;
-	id ws = ((id (*)(id, SEL))objc_msgSend)(wsCls, NSSelectorFromString(@"defaultWorkspace"));
+	id ws = wsCls ? ((id (*)(id, SEL))objc_msgSend)(wsCls, NSSelectorFromString(@"defaultWorkspace")) : nil;
 	SEL sel = NSSelectorFromString(@"openApplicationWithBundleID:");
 	if (ws && [ws respondsToSelector:sel]) {
-		return ((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, bid);
+		((BOOL (*)(id, SEL, id))objc_msgSend)(ws, sel, @"com.apple.mobilesafari");
 	}
-	return NO;
 }
 
-#pragma mark - Command bus (file + notify)
-
-static void MiaoAck(NSString *msg) {
-	NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], msg ?: @""];
-	[line writeToFile:kMiaoAckPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoMarker([NSString stringWithFormat:@"ack %@", msg]);
-}
+#pragma mark - Cmd bus
 
 static void MiaoSendCmd(NSString *cmd) {
-	NSString *body = [NSString stringWithFormat:@"%@\n%@", cmd, @([[NSDate date] timeIntervalSince1970])];
-	[body writeToFile:kMiaoCmdPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoMarker([NSString stringWithFormat:@"cmd send %@", cmd]);
-	// notify_post e' cross-process affidabile; CF Darwin a volte no
-	NSString *note = [NSString stringWithFormat:@"com.noxlab.miao.%@", cmd];
-	notify_post(note.UTF8String);
+	NSString *body = [NSString stringWithFormat:@"%@\n%.0f", cmd, [[NSDate date] timeIntervalSince1970]];
+	[body writeToFile:kCmdPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	MiaoLog([NSString stringWithFormat:@"cmd %@", cmd]);
+	notify_post([[NSString stringWithFormat:@"com.noxlab.miao.%@", cmd] UTF8String]);
 }
 
-#pragma mark - Windows / WKWebView / JS
+#pragma mark - WKWebView / JS
 
-static NSArray<UIWindow *> *MiaoAllWindows(void) {
-	NSMutableArray *arr = [NSMutableArray array];
-	for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-		if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-		[arr addObjectsFromArray:((UIWindowScene *)scene).windows];
+static NSArray *MiaoWindows(void) {
+	NSMutableArray *a = [NSMutableArray array];
+	for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+		if ([sc isKindOfClass:[UIWindowScene class]])
+			[a addObjectsFromArray:((UIWindowScene *)sc).windows];
 	}
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-	if (arr.count == 0) [arr addObjectsFromArray:UIApplication.sharedApplication.windows];
+	if (!a.count) [a addObjectsFromArray:UIApplication.sharedApplication.windows];
 #pragma clang diagnostic pop
-	return arr;
+	return a;
 }
 
-static void MiaoCollectWK(UIView *view, NSMutableArray *out) {
-	if ([view isKindOfClass:NSClassFromString(@"WKWebView")]) [out addObject:view];
-	for (UIView *s in view.subviews) MiaoCollectWK(s, out);
+static void MiaoFindWK(UIView *v, NSMutableArray *out) {
+	if ([v isKindOfClass:NSClassFromString(@"WKWebView")]) [out addObject:v];
+	for (UIView *s in v.subviews) MiaoFindWK(s, out);
 }
 
-static NSArray *MiaoWebViews(void) {
-	NSMutableArray *out = [NSMutableArray array];
-	for (UIWindow *w in MiaoAllWindows()) MiaoCollectWK(w, out);
-	return out;
+static id MiaoBestWebView(void) {
+	NSMutableArray *all = [NSMutableArray array];
+	for (UIWindow *w in MiaoWindows()) MiaoFindWK(w, all);
+	MiaoLog([NSString stringWithFormat:@"wk count %lu", (unsigned long)all.count]);
+	id best = nil;
+	CGFloat bestArea = 0;
+	for (UIView *v in all) {
+		if (v.hidden || v.alpha < 0.05 || !v.window) continue;
+		CGFloat area = v.bounds.size.width * v.bounds.size.height;
+		if (area > bestArea) { bestArea = area; best = v; }
+	}
+	return best ?: all.lastObject;
 }
 
-static void MiaoEvalJS(NSString *js, void (^done)(NSString *result)) {
-	NSArray *wvs = MiaoWebViews();
-	MiaoMarker([NSString stringWithFormat:@"webview count %lu", (unsigned long)wvs.count]);
-	if (wvs.count == 0) {
+static void MiaoJS(NSString *js, void (^done)(NSString *)) {
+	id wk = MiaoBestWebView();
+	if (!wk) {
+		MiaoLog(@"js no wk");
 		if (done) done(nil);
 		return;
-	}
-	// Preferisci l'ultimo WKWebView visibile (tab attiva)
-	id wk = wvs.lastObject;
-	for (id cand in wvs.reverseObjectEnumerator) {
-		UIView *v = (UIView *)cand;
-		if (!v.hidden && v.alpha > 0.1 && v.window) { wk = cand; break; }
 	}
 	SEL sel = @selector(evaluateJavaScript:completionHandler:);
 	if (![wk respondsToSelector:sel]) {
 		if (done) done(nil);
 		return;
 	}
-	((void (*)(id, SEL, id, id))objc_msgSend)(wk, sel, js, ^(id result, NSError *error) {
+	((void (*)(id, SEL, id, id))objc_msgSend)(wk, sel, js, ^(id result, NSError *err) {
 		NSString *s = [result isKindOfClass:[NSString class]] ? result : (result ? [result description] : nil);
-		if (error) MiaoMarker([NSString stringWithFormat:@"js err %@", error.localizedDescription]);
-		MiaoMarker([NSString stringWithFormat:@"js -> %@", s ?: @"nil"]);
+		if (err) MiaoLog([NSString stringWithFormat:@"js err %@", err.localizedDescription]);
+		MiaoLog([NSString stringWithFormat:@"js %@", s ?: @"nil"]);
 		if (done) done(s);
 	});
 }
 
-static CGPoint MiaoParsePoint(NSString *s) {
-	if (s.length == 0) return CGPointZero;
-	NSArray *p = [s componentsSeparatedByString:@","];
+static CGPoint MiaoParseXY(NSString *s) {
+	if (s.length < 3) return CGPointZero;
+	NSString *head = [[s componentsSeparatedByString:@"|"] firstObject];
+	NSArray *p = [head componentsSeparatedByString:@","];
 	if (p.count < 2) return CGPointZero;
 	return CGPointMake([p[0] doubleValue], [p[1] doubleValue]);
 }
 
-/// Tap reale (HID) SOLO in Safari — coordinate dallo schermo.
-static void MiaoSafariHIDTap(CGPoint pt) {
-	if (!MiaoIsSafari()) return;
-	if (pt.x < 1 && pt.y < 1) {
-		MiaoMarker(@"hid tap skipped zero point");
+/// HID umano SOLO Safari, su queue dedicata (non blocca main).
+static void MiaoHumanTapAt(CGPoint pt, void (^done)(void)) {
+	if (!MiaoIsSafari()) {
+		MiaoLog(@"humanTap blocked: not safari");
+		if (done) done();
+		return;
+	}
+	if (pt.x < 1 || pt.y < 1) {
+		MiaoLog(@"humanTap bad point");
+		if (done) done();
 		return;
 	}
 	CGRect b = UIScreen.mainScreen.bounds;
-	pt.x = MAX(8, MIN(b.size.width - 8, pt.x));
-	pt.y = MAX(40, MIN(b.size.height - 8, pt.y));
-	MiaoMarker([NSString stringWithFormat:@"HID tap %.0f,%.0f", pt.x, pt.y]);
-	MiaoToast([NSString stringWithFormat:@"TAP %.0f,%.0f", pt.x, pt.y]);
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		MiaoPerformTap(pt.x, pt.y);
-	});
-}
-
-#pragma mark - Safari actions
-
-static void MiaoSafariClickVideo(void) {
-	MiaoToast(@"Safari: cerco video…");
-	NSString *js =
-		@"(function(){"
-		@"var as=[].slice.call(document.querySelectorAll('a[href*=\"/video/\"]'));"
-		@"if(!as.length) return 'NONE';"
-		@"var a=as[0];"
-		@"for(var i=0;i<Math.min(as.length,8);i++){"
-		@"  var r=as[i].getBoundingClientRect();"
-		@"  if(r.width>40&&r.height>40&&r.top>60&&r.top<window.innerHeight-40){a=as[i];break;}"
-		@"}"
-		@"a.scrollIntoView({block:'center'});"
-		@"var r=a.getBoundingClientRect();"
-		@"var x=Math.round(r.left+r.width/2);"
-		@"var y=Math.round(r.top+r.height/2);"
-		@"return x+','+y+'|'+a.getAttribute('href');"
-		@"})()";
-
-	MiaoEvalJS(js, ^(NSString *result) {
-		if (!result || [result hasPrefix:@"NONE"]) {
-			MiaoAck(@"clickvideo FAIL no link");
-			MiaoToast(@"Nessun link /video/");
-			// fallback HID zona tipica prima card
-			CGRect b = UIScreen.mainScreen.bounds;
-			MiaoSafariHIDTap(CGPointMake(b.size.width * 0.5, MIN(360, b.size.height * 0.40)));
-			return;
-		}
-		NSArray *parts = [result componentsSeparatedByString:@"|"];
-		CGPoint pt = MiaoParsePoint(parts.firstObject);
-		MiaoAck([NSString stringWithFormat:@"clickvideo %@", result]);
-		// doppio tap HID (gesture piu' "umana" / popunder)
-		MiaoSafariHIDTap(pt);
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			MiaoSafariHIDTap(pt);
+	pt.x = MAX(12, MIN(b.size.width - 12, pt.x));
+	pt.y = MAX(55, MIN(b.size.height - 12, pt.y));
+	MiaoToast([NSString stringWithFormat:@"Dito %.0f,%.0f", pt.x, pt.y]);
+	MiaoLog([NSString stringWithFormat:@"humanTap %.0f,%.0f", pt.x, pt.y]);
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+		MiaoPerformHumanTap(pt.x, pt.y);
+		dispatch_async(dispatch_get_main_queue(), ^{
+			if (done) done();
 		});
 	});
 }
 
-static void MiaoSafariSkipAd(void) {
-	MiaoToast(@"Safari: Skip…");
+#pragma mark - Safari actions (human)
+
+static void MiaoActReady(void (^done)(BOOL ok)) {
+	MiaoJS(@"(function(){return document.querySelectorAll('a[href*=\"/video/\"]').length+'|'+location.href;})()", ^(NSString *r) {
+		BOOL ok = r && ![r hasPrefix:@"0|"];
+		if (done) done(ok);
+	});
+}
+
+static void MiaoActClickVideo(void) {
+	MiaoToast(@"Cerco thumb…");
+	NSString *js =
+		@"(function(){"
+		@"var as=[].slice.call(document.querySelectorAll('a[href*=\"/video/\"]'));"
+		@"if(!as.length) return 'NONE';"
+		@"var a=null;"
+		@"for(var i=0;i<as.length;i++){"
+		@"  var r=as[i].getBoundingClientRect();"
+		@"  if(r.width>=60&&r.height>=60&&r.top>=70&&r.bottom<=window.innerHeight-20){a=as[i];break;}"
+		@"}"
+		@"if(!a) a=as[0];"
+		@"a.scrollIntoView({block:'center',inline:'nearest'});"
+		@"var r=a.getBoundingClientRect();"
+		@"return Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2)+'|'+a.getAttribute('href');"
+		@"})()";
+
+	MiaoJS(js, ^(NSString *result) {
+		if (!result || [result hasPrefix:@"NONE"]) {
+			MiaoAck(@"click NONE");
+			MiaoToast(@"Nessun thumb");
+			return;
+		}
+		CGPoint pt = MiaoParseXY(result);
+		MiaoAck([NSString stringWithFormat:@"click target %@", result]);
+		// Un solo gesto umano (non doppio JS click — solo HID)
+		MiaoHumanTapAt(pt, ^{
+			MiaoAck(@"click HID done");
+		});
+	});
+}
+
+static void MiaoActSkip(void) {
+	MiaoToast(@"Skip…");
 	NSString *js =
 		@"(function(){"
 		@"var btns=[].slice.call(document.querySelectorAll('button,a,[role=button]'));"
 		@"var b=btns.find(function(x){"
 		@"  var t=(x.innerText||x.textContent||'').trim();"
-		@"  if(!/skip|salta/i.test(t)) return false;"
+		@"  if(!/^(skip|salta)/i.test(t) && !/skip|salta/i.test(t)) return false;"
 		@"  if(x.disabled) return false;"
 		@"  var r=x.getBoundingClientRect();"
-		@"  return r.width>20&&r.height>10;"
+		@"  return r.width>24&&r.height>12&&r.top>0;"
 		@"});"
-		@"if(!b){"
-		@"  b=btns.find(function(x){return /skip|salta/i.test((x.innerText||'')+'')});"
-		@"}"
 		@"if(!b) return 'NONE';"
 		@"var r=b.getBoundingClientRect();"
-		@"return Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2)+'|'+((b.innerText||'').trim().slice(0,24));"
+		@"return Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2)+'|'+((b.innerText||'').trim().slice(0,20));"
 		@"})()";
 
-	MiaoEvalJS(js, ^(NSString *result) {
-		if (!result || [result hasPrefix:@"NONE"]) {
-			MiaoAck(@"skip NONE — fallback coords");
+	MiaoJS(js, ^(NSString *result) {
+		CGPoint pt = CGPointZero;
+		if (result && ![result hasPrefix:@"NONE"]) {
+			pt = MiaoParseXY(result);
+			MiaoAck([NSString stringWithFormat:@"skip target %@", result]);
+		} else {
 			CGRect b = UIScreen.mainScreen.bounds;
-			// barra Skip sotto player (layout VideoPlayer)
-			CGFloat y = 70.0 + (b.size.width * 9.0 / 16.0) + 24.0;
-			MiaoSafariHIDTap(CGPointMake(b.size.width * 0.78, MIN(y, b.size.height * 0.62)));
-			return;
+			pt = CGPointMake(b.size.width * 0.78, MIN(70 + b.size.width * 9.0 / 16.0 + 28, b.size.height * 0.58));
+			MiaoAck(@"skip fallback coords");
 		}
-		NSArray *parts = [result componentsSeparatedByString:@"|"];
-		CGPoint pt = MiaoParsePoint(parts.firstObject);
-		MiaoAck([NSString stringWithFormat:@"skip %@", result]);
-		MiaoSafariHIDTap(pt);
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			MiaoSafariHIDTap(pt);
+		MiaoHumanTapAt(pt, ^{
+			MiaoAck(@"skip HID done");
 		});
 	});
 }
 
-static void MiaoSafariHumanize(void) {
+static void MiaoActHumanWatch(void) {
 	NSString *js =
 		@"(function(){"
 		@"var v=document.querySelector('video[data-nox-content],video');"
 		@"if(v){try{v.currentTime=Math.min((v.duration||999),(v.currentTime||0)+10);v.muted=false;v.play();}catch(e){}}"
-		@"window.scrollBy(0, 320+Math.floor(Math.random()*200));"
-		@"return v?'seek+scroll':'scroll';"
+		@"window.scrollBy({top:260+Math.floor(Math.random()*180),left:0,behavior:'smooth'});"
+		@"return (v?'seek10+':'')+'scroll|'+location.pathname;"
 		@"})()";
-	MiaoEvalJS(js, ^(NSString *result) {
-		MiaoAck([NSString stringWithFormat:@"human %@", result ?: @"?"]);
-		MiaoToast([NSString stringWithFormat:@"Human %@", result ?: @"ok"]);
+	MiaoJS(js, ^(NSString *r) {
+		MiaoAck([NSString stringWithFormat:@"human %@", r ?: @"?"]);
+		MiaoToast([NSString stringWithFormat:@"Human %@", r ?: @"ok"]);
 	});
 }
 
-#pragma mark - Close ad tabs
+static void MiaoActWhere(void (^done)(NSString *path)) {
+	MiaoJS(@"(function(){return location.pathname+'|'+location.href;})()", ^(NSString *r) {
+		if (done) done(r ?: @"");
+	});
+}
 
-static id MiaoBrowserController(void) {
-	Class cls = NSClassFromString(@"BrowserController");
-	if (!cls) cls = NSClassFromString(@"_SFBrowserController");
-	if (!cls) return nil;
+#pragma mark - Close ads tabs
+
+static id MiaoBrowser(void) {
+	Class c = NSClassFromString(@"BrowserController") ?: NSClassFromString(@"_SFBrowserController");
+	if (!c) return nil;
 	for (NSString *s in @[ @"sharedBrowserController", @"sharedInstance" ]) {
 		SEL sel = NSSelectorFromString(s);
-		if ([cls respondsToSelector:sel]) {
-			@try { return ((id (*)(id, SEL))objc_msgSend)(cls, sel); }
+		if ([c respondsToSelector:sel]) {
+			@try { return ((id (*)(id, SEL))objc_msgSend)(c, sel); }
 			@catch (NSException *ex) { (void)ex; }
 		}
 	}
@@ -334,17 +337,17 @@ static id MiaoBrowserController(void) {
 }
 
 static NSString *MiaoTabURL(id tab) {
-	for (NSString *k in @[ @"URLString", @"urlString", @"URL", @"committedURL" ]) {
+	for (NSString *k in @[ @"URLString", @"URL", @"committedURL", @"urlString" ]) {
 		@try {
 			id v = [tab valueForKey:k];
-			if ([v isKindOfClass:[NSURL class]]) return [v absoluteString];
+			if ([v isKindOfClass:[NSURL class]]) return [(NSURL *)v absoluteString];
 			if ([v isKindOfClass:[NSString class]] && [v length]) return v;
 		} @catch (NSException *ex) { (void)ex; }
 	}
-	return nil;
+	return @"";
 }
 
-static NSArray *MiaoTabs(id bc) {
+static NSArray *MiaoTabList(id bc) {
 	if (!bc) return @[];
 	id tc = nil;
 	@try { tc = [bc valueForKey:@"tabController"]; } @catch (NSException *ex) { (void)ex; }
@@ -358,16 +361,15 @@ static NSArray *MiaoTabs(id bc) {
 	return @[];
 }
 
-static BOOL MiaoCloseOneTab(id bc, id tab) {
+static BOOL MiaoCloseTab(id bc, id tab) {
 	for (NSString *m in @[ @"closeTabDocument:animated:", @"closeTab:" ]) {
 		SEL sel = NSSelectorFromString(m);
 		if (![bc respondsToSelector:sel]) continue;
 		@try {
-			if ([m hasSuffix:@"animated:"]) {
+			if ([m containsString:@"animated"])
 				((void (*)(id, SEL, id, BOOL))objc_msgSend)(bc, sel, tab, YES);
-			} else {
+			else
 				((void (*)(id, SEL, id))objc_msgSend)(bc, sel, tab);
-			}
 			return YES;
 		} @catch (NSException *ex) { (void)ex; }
 	}
@@ -383,253 +385,218 @@ static BOOL MiaoCloseOneTab(id bc, id tab) {
 	return NO;
 }
 
-static NSInteger MiaoCloseAdTabs(void) {
-	id bc = MiaoBrowserController();
-	NSArray *tabs = MiaoTabs(bc);
+static NSInteger MiaoCloseNonNoxTabs(void) {
+	id bc = MiaoBrowser();
+	NSArray *tabs = MiaoTabList(bc);
 	NSInteger closed = 0;
 	for (id tab in [tabs reverseObjectEnumerator]) {
-		NSString *u = MiaoTabURL(tab) ?: @"";
-		MiaoMarker([NSString stringWithFormat:@"tab %@", u.length ? u : @"(empty)"]);
-		BOOL keep = [u.lowercaseString containsString:@"noxreel"];
-		if (keep) continue;
-		if (MiaoCloseOneTab(bc, tab)) closed++;
+		NSString *u = MiaoTabURL(tab);
+		MiaoLog([NSString stringWithFormat:@"tab %@", u.length ? u : @"(empty)"]);
+		if ([u.lowercaseString containsString:@"noxreel"]) continue;
+		if (MiaoCloseTab(bc, tab)) closed++;
 	}
-	MiaoAck([NSString stringWithFormat:@"closeads %ld/%lu", (long)closed, (unsigned long)tabs.count]);
+	MiaoAck([NSString stringWithFormat:@"closeads %ld of %lu", (long)closed, (unsigned long)tabs.count]);
 	return closed;
 }
 
-#pragma mark - Safari cmd handler + poll
+#pragma mark - Safari cmd
 
-static void MiaoHandleCmd(NSString *cmd) {
+static void MiaoHandle(NSString *cmd) {
 	if (!MiaoIsSafari()) return;
-	cmd = [[cmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-	if (cmd.length == 0) return;
-	MiaoMarker([NSString stringWithFormat:@"handle %@", cmd]);
-	MiaoToast([NSString stringWithFormat:@"CMD %@", cmd]);
+	cmd = [[cmd lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	if (!cmd.length) return;
+	MiaoLog([NSString stringWithFormat:@"handle %@", cmd]);
+	MiaoToast([NSString stringWithFormat:@"▸ %@", cmd]);
 
-	if ([cmd isEqualToString:@"clickvideo"]) {
-		MiaoSafariClickVideo();
+	if ([cmd isEqualToString:@"ping"]) {
+		MiaoAck(@"pong");
+		MiaoToast(@"Safari OK");
+	} else if ([cmd isEqualToString:@"clickvideo"]) {
+		MiaoActClickVideo();
 	} else if ([cmd isEqualToString:@"closeads"]) {
-		NSInteger n = MiaoCloseAdTabs();
+		NSInteger n = MiaoCloseNonNoxTabs();
 		MiaoToast([NSString stringWithFormat:@"Ads chiuse %ld", (long)n]);
 	} else if ([cmd isEqualToString:@"skipad"]) {
-		MiaoSafariSkipAd();
+		MiaoActSkip();
 	} else if ([cmd isEqualToString:@"human"]) {
-		MiaoSafariHumanize();
+		MiaoActHumanWatch();
 	} else if ([cmd isEqualToString:@"closeextra"]) {
-		NSInteger n = MiaoCloseAdTabs();
+		NSInteger n = MiaoCloseNonNoxTabs();
 		MiaoToast([NSString stringWithFormat:@"Extra %ld", (long)n]);
-	} else if ([cmd isEqualToString:@"ping"]) {
-		MiaoAck(@"pong");
-		MiaoToast(@"Safari PONG");
+	} else if ([cmd isEqualToString:@"where"]) {
+		MiaoActWhere(^(NSString *p) { MiaoToast(p ?: @"?"); });
 	}
 }
 
-static void MiaoConsumeCmdFile(void) {
-	NSString *raw = [NSString stringWithContentsOfFile:kMiaoCmdPath encoding:NSUTF8StringEncoding error:nil];
-	if (raw.length == 0) return;
-	[[NSFileManager defaultManager] removeItemAtPath:kMiaoCmdPath error:nil];
+static void MiaoConsumeFile(void) {
+	NSString *raw = [NSString stringWithContentsOfFile:kCmdPath encoding:NSUTF8StringEncoding error:nil];
+	if (!raw.length) return;
+	[[NSFileManager defaultManager] removeItemAtPath:kCmdPath error:nil];
 	NSString *cmd = [[raw componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] firstObject];
-	MiaoHandleCmd(cmd);
+	MiaoHandle(cmd);
 }
 
-static void MiaoStartSafariPoll(void) {
+static void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoMarker(@"safari poll start");
-	MiaoToast(@"Miao Safari ON");
+	MiaoLog(@"safari ready 0.6");
+	MiaoToast(@"Miao dito ON");
 
-	// notify listeners
-	NSArray *names = @[ @"clickvideo", @"closeads", @"skipad", @"human", @"closeextra", @"ping" ];
-	for (NSString *n in names) {
+	for (NSString *n in @[ @"ping", @"clickvideo", @"closeads", @"skipad", @"human", @"closeextra", @"where" ]) {
 		NSString *full = [NSString stringWithFormat:@"com.noxlab.miao.%@", n];
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
 			(void)t;
-			// preferisci file se presente, altrimenti usa nome notify
-			NSString *raw = [NSString stringWithContentsOfFile:kMiaoCmdPath encoding:NSUTF8StringEncoding error:nil];
-			if (raw.length) {
-				MiaoConsumeCmdFile();
-			} else {
-				MiaoHandleCmd(n);
-			}
+			NSString *raw = [NSString stringWithContentsOfFile:kCmdPath encoding:NSUTF8StringEncoding error:nil];
+			if (raw.length) MiaoConsumeFile();
+			else MiaoHandle(n);
 		});
 	}
-
-	// poll file ogni 0.6s (backup se notify non arriva)
-	[NSTimer scheduledTimerWithTimeInterval:0.6 repeats:YES block:^(__unused NSTimer *timer) {
-		MiaoConsumeCmdFile();
+	[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(__unused NSTimer *tm) {
+		MiaoConsumeFile();
 	}];
 }
 
-#pragma mark - Session (SpringBoard orchestrator)
+#pragma mark - Session SB (orchestrator umano)
 
 /**
- 1) HOME
- 2) clickvideo (HID sulle coordinate del thumb) → popunder possibile
- 3) closeads
- 4) skipad dopo 11s
- 5) human
- 6) closeextra
+ Flusso umano:
+ 1 HOME + wait load
+ 2 HID tap thumb (gesto dito)
+ 3 wait → where: se /video/ ok; ritenta 1 tap
+ 4 close ads non-nox
+ 5 wait 10.5s → Skip HID
+ 6 human seek/scroll
+ 7 close extra
  */
-static void MiaoRunOneCycle(NSInteger index, NSInteger total, void (^done)(void)) {
+static void MiaoAfter(NSTimeInterval sec, void (^block)(void)) {
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(sec * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
+}
+
+static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	NSString *home = MiaoHomeURL();
-	NSTimeInterval afterSkip = MiaoWaitSeconds();
+	NSTimeInterval watch = MiaoWatchSec();
 
-	MiaoToast([NSString stringWithFormat:@"Ciclo %ld/%ld HOME", (long)(index + 1), (long)total]);
-	MiaoMarker([NSString stringWithFormat:@"cycle %ld start", (long)index]);
+	MiaoToast([NSString stringWithFormat:@"%ld/%ld Home…", (long)(idx + 1), (long)total]);
+	MiaoLog([NSString stringWithFormat:@"cycle %ld", (long)idx]);
 
-	// Assicura Safari up + home
-	MiaoOpenBundleID(@"com.apple.mobilesafari");
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoOpenURLString(home);
+	MiaoOpenSafari();
+	MiaoAfter(1.2, ^{ MiaoOpenURL(home); });
+
+	MiaoAfter(4.0, ^{ MiaoSendCmd(@"ping"); });
+
+	// Aspetta hydration: click a 8s e 11s (2 gesti umani, non spam)
+	MiaoAfter(8.0, ^{
+		MiaoToast(@"Tap thumb…");
+		MiaoSendCmd(@"clickvideo");
 	});
-
-	// ping: verifica che Safari riceva comandi
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoSendCmd(@"ping");
+	MiaoAfter(12.0, ^{
+		MiaoSendCmd(@"where");
 	});
-
-	// click thumb (attendi hydration Next.js)
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoToast(@"Click video…");
+	MiaoAfter(13.0, ^{
+		// Secondo tentativo solo se ancora in home (Safari risponde where via toast; qui ritentiamo comunque soft)
 		MiaoSendCmd(@"clickvideo");
 	});
 
-	// ritenta click (a volte 1° fallisce)
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(9.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoSendCmd(@"clickvideo");
-	});
-
-	// chiudi ads se aperte
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+	MiaoAfter(16.0, ^{
 		MiaoToast(@"Chiudo ads…");
 		MiaoSendCmd(@"closeads");
 	});
 
-	// Skip dopo countdown 10s dal video (dal 2° click ~9.5 → +11)
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(21.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoToast(@"Skip…");
-		MiaoSendCmd(@"skipad");
+	// Skip: ~10s dopo essere sul video (dal 2° tap ~13 → +11 = 24)
+	MiaoAfter(24.0, ^{
+		MiaoToast(@"Aspetta Skip…");
 	});
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(22.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoSendCmd(@"skipad");
-	});
+	MiaoAfter(25.5, ^{ MiaoSendCmd(@"skipad"); });
 
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(26.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoSendCmd(@"human");
-	});
+	MiaoAfter(28.0, ^{ MiaoSendCmd(@"human"); });
 
-	NSTimeInterval endAt = 26.0 + afterSkip;
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(endAt * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+	MiaoAfter(28.0 + watch, ^{
 		MiaoSendCmd(@"closeextra");
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			if (done) done();
-		});
+		MiaoAfter(1.5, ^{ if (done) done(); });
 	});
 }
 
-static void MiaoSessionStep(NSInteger index, NSInteger total);
+static void MiaoStep(NSInteger i, NSInteger n);
 
-static void MiaoSessionStep(NSInteger index, NSInteger total) {
-	if (index >= total) {
+static void MiaoStep(NSInteger i, NSInteger n) {
+	if (i >= n) {
 		gSessionBusy = NO;
-		MiaoToast(@"Sessione fine");
-		MiaoMarker(@"session end");
+		MiaoToast(@"Fine sessione");
+		MiaoLog(@"session end");
 		return;
 	}
-	MiaoRunOneCycle(index, total, ^{
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			MiaoSessionStep(index + 1, total);
-		});
+	MiaoRunCycle(i, n, ^{
+		MiaoAfter(1.0, ^{ MiaoStep(i + 1, n); });
 	});
 }
 
-static void MiaoRunSession(void) {
-	if (!MiaoIsSpringBoard()) return;
-	if (gSessionBusy) {
-		MiaoToast(@"Gia in corso");
+static void MiaoSession(void) {
+	if (!MiaoIsSB() || gSessionBusy) {
+		if (gSessionBusy) MiaoToast(@"Busy");
 		return;
 	}
 	gSessionBusy = YES;
-	[@"" writeToFile:kMiaoLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoMarker(@"session start 0.5.1");
-	MiaoToast(@"Sessione 0.5.1…");
-	MiaoSessionStep(0, MiaoCycles());
+	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	MiaoLog(@"session 0.6 human-hid");
+	MiaoToast(@"Sessione umana…");
+	MiaoStep(0, MiaoCycles());
 }
 
 #pragma mark - Volume
 
 static void MiaoVol(void) {
-	if (!MiaoIsSpringBoard()) return;
+	if (!MiaoIsSB()) return;
 	NSTimeInterval now = NSDate.date.timeIntervalSince1970;
 	if (now - gLastVol < 0.45) return;
 	gLastVol = now;
-	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 2.0) {
+	if (gVolWindowStart <= 0 || (now - gVolWindowStart) > 2.2) {
 		gVolWindowStart = now;
 		gVolCount = 1;
-		MiaoToast(@"Miao 1/3");
+		MiaoToast(@"1/3");
 		return;
 	}
 	gVolCount++;
 	if (gVolCount < 3) {
-		MiaoToast([NSString stringWithFormat:@"Miao %ld/3", (long)gVolCount]);
+		MiaoToast([NSString stringWithFormat:@"%ld/3", (long)gVolCount]);
 		return;
 	}
 	gVolCount = 0;
 	gVolWindowStart = 0;
-	MiaoRunSession();
+	MiaoSession();
 }
 
 static void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
-	MiaoMarker([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSpringBoard()) {
-		MiaoToast(@"Miao 0.5.1 - 3x Vol");
-	} else if (MiaoIsSafari()) {
-		MiaoStartSafariPoll();
-	}
+	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
+	if (MiaoIsSB()) MiaoToast(@"Miao 0.6 — 3x Vol");
+	else if (MiaoIsSafari()) MiaoStartSafari();
 }
 
 %hook SpringBoard
 - (void)applicationDidFinishLaunching:(id)app {
 	%orig;
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoBoot();
-	});
+	MiaoAfter(3, ^{ MiaoBoot(); });
 }
 %end
 
 %hook SBVolumeControl
-- (void)decreaseVolume {
-	MiaoVol();
-	%orig;
-}
-- (void)increaseVolume {
-	MiaoVol();
-	%orig;
-}
+- (void)decreaseVolume { MiaoVol(); %orig; }
+- (void)increaseVolume { MiaoVol(); %orig; }
 %end
 
 %ctor {
 	@autoreleasepool {
-		MiaoMarker([NSString stringWithFormat:@"ctor %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-		if (MiaoIsSpringBoard()) {
+		MiaoLog([NSString stringWithFormat:@"ctor %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
+		if (MiaoIsSB()) {
 			[[NSNotificationCenter defaultCenter] addObserverForName:@"AVSystemController_SystemVolumeDidChangeNotification"
-															  object:nil
-															   queue:NSOperationQueue.mainQueue
+															  object:nil queue:NSOperationQueue.mainQueue
 														  usingBlock:^(__unused NSNotification *n) { MiaoVol(); }];
-			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-				MiaoBoot();
-			});
+			MiaoAfter(5, ^{ MiaoBoot(); });
 		} else if (MiaoIsSafari()) {
-			dispatch_async(dispatch_get_main_queue(), ^{
-				MiaoStartSafariPoll();
-			});
-			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-				MiaoBoot();
-			});
+			dispatch_async(dispatch_get_main_queue(), ^{ MiaoStartSafari(); });
+			MiaoAfter(2, ^{ MiaoBoot(); });
 		}
 	}
 }

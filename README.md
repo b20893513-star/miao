@@ -1,24 +1,26 @@
-# Miao 0.5.1
+# Miao 0.6 — tap stile dito
 
-## Fix rispetto a 0.5.0
+## Obiettivo
+I tap devono avvicinarsi a un **tocco umano** (IOHID digitizer con down → micro-move → up), **solo in Safari**, coordinate dal DOM del thumb/Skip.
 
-- Click/Skip **non** usano piu' solo JS `.click()` (non apre popunder / spesso non skippa)
-- Legge **coordinate dal DOM** (`getBoundingClientRect`) e fa **tap HID reale in Safari**
-- Comandi via **file** `/var/mobile/Documents/miao-cmd.txt` + `notify_post` (piu' affidabile)
-- Toast in Safari: `Miao Safari ON`, `CMD …`, `TAP x,y`, `Safari PONG`
+## Flusso (3× Volume)
+1. HOME noxreel + attesa load  
+2. **Gesto dito** sul thumb `/video/`  
+3. Chiude schede non-noxreel (se ci sono)  
+4. ~10s → gesto dito su **Skip**  
+5. Seek +10 + scroll  
+6. Chiude extra  
 
-## Flusso
+Niente `element.click()` per aprire il video (quello non è trusted).
 
-1. HOME  
-2. HID tap sulla card `/video/` (2 tentativi)  
-3. Chiudi schede non-noxreel (se aperte)  
-4. Skip @ ~10s (HID sul bottone Skip)  
-5. Seek+scroll  
-6. Chiudi extra  
+## Toast utili
+- `Miao dito ON` / `Safari OK` → Safari ha il tweak  
+- `Dito x,y` → HID in corso  
+- `Ads chiuse N`  
 
-## Debug
+## Log
+`/var/mobile/Documents/miao-loaded.txt`  
+`/var/mobile/Documents/miao-ack.txt`
 
-- `/var/mobile/Documents/miao-loaded.txt`  
-- `/var/mobile/Documents/miao-ack.txt`  
-
-Se non vedi mai `Miao Safari ON` / `PONG`, il tweak non e' iniettato in Safari.
+## Nota
+Se lo schermo lampeggia/nero: Userspace Reboot e segnala — HID e' solo in Safari, non da SpringBoard.
