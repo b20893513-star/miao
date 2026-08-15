@@ -536,7 +536,7 @@ static void MiaoActClickVideo(void) {
 										MiaoJS(go, ^(NSString *rr) { MiaoAck(rr ?: @"js"); });
 									} else {
 										MiaoAck(@"tap miss");
-										MiaoToast(@"Miss (BB no nav)");
+										MiaoToast(@"Miss (HID no nav)");
 									}
 								});
 							});
