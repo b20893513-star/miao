@@ -1,18 +1,10 @@
-# Miao 0.8.5
+# Miao 0.8.6 (locale — non pushata)
 
-## `BB OFF` / `HID OFF`
-Su Dopamine **backboardd spesso non viene iniettato** → MiaoHID non parte.  
-Ora il worker HID gira in **SpringBoard** (lì Miao carica già, volume ok).
+## Fix miss `HID-?` / `Miss`
+Da SpringBoard, `IOHIDEventSystemClientDispatchEvent` con coords **normalizzate** non arriva a Safari.
 
-## Toast
-- All’avvio SB: **`HID worker SB ON`**
-- Al tap: **`HID-sb x,y`** (bene) oppure **`HID OFF (no worker)`** (respring/reboot)
-- Prima: **`HIT`/`MISS`** da elementFromPoint
+Ora: punti **schermo** + `CAWindowServer contextIdAtPosition` + `BKSHIDEventSetDigitizerInfo` + `BKHIDSystemInterface injectHIDEvent` (fallback ClientDispatch).
 
-## Dopo install
-1. Aggiorna 0.8.5  
-2. **Userspace Reboot** (o almeno Respring se il worker SB basta)  
-3. All’unlock dovresti vedere **HID worker SB ON**  
-4. Poi 3× Vol su Safari/noxreel  
-
-Se non vedi `HID worker SB ON`, Miao non e' in SpringBoard.
+## Build
+Quando vuoi: push su `main` → CI, oppure `make package THEOS_PACKAGE_SCHEME=rootless` in locale.
+Non e' stato pushato / buildato da questa sessione.
