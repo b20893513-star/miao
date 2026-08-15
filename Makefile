@@ -6,8 +6,8 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = Miao
 
-# Niente TouchSim/HID: crashava SpringBoard/backboardd. Tap soft in-process in Safari.
-Miao_FILES = Tweak.x
+# HID solo chiamato da MobileSafari (coordinate dal DOM). Non da SpringBoard.
+Miao_FILES = Tweak.x TouchSim.mm
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation
 

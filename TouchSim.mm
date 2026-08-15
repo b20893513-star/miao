@@ -85,16 +85,10 @@ static void MiaoDispatchDigitizer(IOHIDFloat nx, IOHIDFloat ny, BOOL touching) {
 		p_SetSenderID(parent, 0x000000010000027FULL);
 	}
 
+	// Solo dispatch IOHID — niente _enqueueHIDEvent (instabile / crash su SB)
 	static IOHIDEventSystemClientRef client = NULL;
 	if (!client) client = p_ClientCreate(kCFAllocatorDefault);
 	if (client) p_ClientDispatch(client, parent);
-
-	// Soft enqueue su UIApplication se disponibile (un solo evento, non spam)
-	id app = [UIApplication sharedApplication];
-	SEL sel = NSSelectorFromString(@"_enqueueHIDEvent:");
-	if (app && [app respondsToSelector:sel]) {
-		((void (*)(id, SEL, IOHIDEventRef))objc_msgSend)(app, sel, parent);
-	}
 
 	CFRelease(parent);
 }
