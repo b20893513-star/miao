@@ -475,8 +475,7 @@ static NSString *MiaoHidWho(void) {
  getBoundingClientRect (viewport WK) → punti FINESTRA Safari.
  Il tap UIKit vuole coordinate finestra; solo il fallback HID vuole lo schermo.
  */
-static CGPoint MiaoViewportToWindow(CGPoint vp) {
-	UIView *wk = MiaoBestWebView();
+static CGPoint MiaoViewportToWindowIn(UIView *wk, CGPoint vp) {
 	if (!wk) return vp;
 	UIWindow *win = wk.window;
 	CGPoint p = win ? [wk convertPoint:vp toView:win] : [wk convertPoint:vp toView:nil];
@@ -486,9 +485,13 @@ static CGPoint MiaoViewportToWindow(CGPoint vp) {
 	return p;
 }
 
+static CGPoint MiaoViewportToWindow(CGPoint vp) {
+	return MiaoViewportToWindowIn(MiaoBestWebView(), vp);
+}
+
 /// Punti finestra → schermo (serve solo all'HID worker).
 static CGPoint MiaoWindowToScreen(CGPoint p) {
-	UIView *wk = MiaoBestWebView();
+	UIView *wk = MiaoFrontWebView() ?: MiaoBestWebView();
 	UIWindow *win = wk.window;
 	if (!win) return p;
 	return [win convertPoint:p toWindow:nil];
@@ -801,11 +804,10 @@ static void MiaoReadProbe(void (^done)(CGPoint landed, BOOL trusted, NSString *r
 }
 
 /// Path principale: coords viewport DOM → finestra (+ correzione) → tap.
+/// Solo sulla pagina del SITO: se a schermo c'e' altro, non tappiamo.
 static BOOL MiaoTrustedTapViewport(CGPoint vp, NSString *label) {
 	if (vp.x < 1 && vp.y < 1) return NO;
 
-	// Le coordinate arrivano dalla pagina del sito: se a schermo c'e' l'ad,
-	// il touch atterrerebbe sull'ad. Meglio non tappare che tappare a caso.
 	id src = MiaoBestWebView();
 	if (MiaoIsSafari() && src && src != MiaoFrontWebView()) {
 		MiaoAck([NSString stringWithFormat:@"tap annullato, sito non in primo piano\n%@", MiaoWebState()]);
@@ -814,11 +816,34 @@ static BOOL MiaoTrustedTapViewport(CGPoint vp, NSString *label) {
 	}
 
 	MiaoCalLoad();
-	CGPoint win = MiaoViewportToWindow(vp);
+	CGPoint win = MiaoViewportToWindowIn(src ?: MiaoFrontWebView(), vp);
 	win.x += gCalDX;
 	win.y += gCalDY;
 	MiaoLog([NSString stringWithFormat:@"tap %@ vp=%.0f,%.0f win=%.0f,%.0f cal=%.0f,%.0f",
 		label ?: @"", vp.x, vp.y, win.x, win.y, gCalDX, gCalDY]);
+	return MiaoTrustedTapScreen(win, label);
+}
+
+/**
+ Tap sulla pagina che si vede adesso (anche l'ad).
+
+ Serve per i click sul creativo: le coordinate arrivano dalla webview in primo
+ piano, e il check "sito davanti" non deve bloccarle — altrimenti sull'ad non
+ si tocca mai niente e Relay non vede alcun click, solo un'apertura di scheda.
+ */
+static BOOL MiaoTrustedTapFront(CGPoint vp, NSString *label) {
+	if (vp.x < 1 && vp.y < 1) return NO;
+	UIView *front = MiaoFrontWebView();
+	if (!front || !MiaoWKVisible(front)) {
+		MiaoAck([NSString stringWithFormat:@"tap front: nessuna pagina piena\n%@", MiaoWebState()]);
+		return NO;
+	}
+	MiaoCalLoad();
+	CGPoint win = MiaoViewportToWindowIn(front, vp);
+	win.x += gCalDX;
+	win.y += gCalDY;
+	MiaoLog([NSString stringWithFormat:@"tap-front %@ vp=%.0f,%.0f win=%.0f,%.0f url=%@",
+		label ?: @"", vp.x, vp.y, win.x, win.y, MiaoWebViewURL(front)]);
 	return MiaoTrustedTapScreen(win, label);
 }
 
@@ -1091,19 +1116,20 @@ static void MiaoPickThumb(void (^done)(NSInteger idx)) {
 
 		NSArray *pool = nil;
 		if (gMood == 0) {
-			/* curioso: preferisce piu' in basso, a volte cambia idea */
-			pool = far.count ? far : (mid.count ? mid : near);
-			if (MiaoRng() < 0.35 && mid.count) pool = mid;
-			if (MiaoRng() < 0.2 && near.count) pool = near;
+			/* curioso: un po' piu' in basso, ma non oltre 2 schermate (prima
+			   andava su far e falliva lo scroll) */
+			pool = mid.count ? mid : near;
+			if (MiaoRng() < 0.25 && far.count) pool = far;
+			if (MiaoRng() < 0.3 && near.count) pool = near;
 		} else if (gMood == 2) {
 			/* mirato: prende qualcosa di gia' in vista */
 			pool = near.count ? near : (mid.count ? mid : all);
-			if (MiaoRng() < 0.25 && mid.count) pool = mid;
+			if (MiaoRng() < 0.2 && mid.count) pool = mid;
 		} else {
-			/* casual: mescola le fasce */
+			/* casual: mescola le fasce vicine */
 			double u = MiaoRng();
-			if (u < 0.45) pool = near.count ? near : all;
-			else if (u < 0.8) pool = mid.count ? mid : (near.count ? near : all);
+			if (u < 0.55) pool = near.count ? near : all;
+			else if (u < 0.9) pool = mid.count ? mid : (near.count ? near : all);
 			else pool = far.count ? far : (mid.count ? mid : all);
 		}
 		if (!pool.count) pool = all;
@@ -1295,80 +1321,104 @@ static void MiaoActSkip(void) {
 	});
 }
 
-/// Click ads: CTA preroll, learn more, exo real-href — PRIORITA' tap trusted (coords), JS solo info
-static void MiaoActClickAd(void) {
-	MiaoToast(@"Click ads...");
-	NSString *js =
-		@"(function(){"
-		@"function visible(el){"
-		@"  if(!el) return false;"
-		@"  var r=el.getBoundingClientRect();"
-		@"  return r.width>12&&r.height>12&&r.bottom>0&&r.top<window.innerHeight;"
-		@"}"
-		@"function pack(el,tag){"
-		@"  if(!el||!visible(el)) return null;"
-		@"  var r=el.getBoundingClientRect();"
-		@"  var h=el.getAttribute('real-href')||el.href||el.getAttribute('href')||'';"
-		@"  return tag+'|'+Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2)+'|'+(h||'').toString().slice(0,80);"
-		@"}"
-		@"var sels=["
-		@"  'a.exo-native-widget-item[real-href]',"
-		@"  'a.exo-native-widget-item',"
-		@"  'a[real-href*=\"magsrv\"]',"
-		@"  'a[real-href*=\"click.php\"]',"
-		@"  '[real-href*=\"magsrv\"]',"
-		@"  'a[href*=\"click.php\"]',"
-		@"  'a[href*=\"magsrv\"]',"
-		@"  'a[href*=\"exoclick\"]',"
-		@"  'a[href*=\"realsrv\"]',"
-		@"  '.ad-slot a[href]',"
-		@"  '[class*=\"vast\"] a[href]',"
-		@"  '[class*=\"preroll\"] a[href]'"
-		@"];"
-		@"for(var s=0;s<sels.length;s++){"
-		@"  var nodes=[].slice.call(document.querySelectorAll(sels[s]));"
-		@"  for(var i=0;i<nodes.length;i++){"
-		@"    var el=nodes[i];"
-		@"    var h=(el.getAttribute('real-href')||el.href||'').toLowerCase();"
-		@"    var t=((el.innerText||'')+'').toLowerCase();"
-		@"    if(/noxreel\\.uk/.test(h)&&!/click|out|go|redirect/.test(h)) continue;"
-		@"    if(/skip|salta/.test(t)) continue;"
-		@"    var r=pack(el,'AD');"
-		@"    if(r) return r;"
-		@"  }"
-		@"}"
-		@"var ctaRe=/learn\\s*more|visit|scopri|visita|continua|click\\s*here|vai\\s*al\\s*sito|annuncio|advertiser/i;"
-		@"var btns=[].slice.call(document.querySelectorAll('a,button,[role=button]'));"
-		@"for(var j=0;j<btns.length;j++){"
-		@"  if(ctaRe.test((btns[j].innerText||'')+'')){"
-		@"    var r2=pack(btns[j],'CTA');"
-		@"    if(r2) return r2;"
-		@"  }"
-		@"}"
-		@"var player=document.querySelector('[data-nox-preroll],iframe[data-nox-preroll],iframe[title=\"preroll\"]');"
-		@"if(player){var r3=pack(player,'PREROLL'); if(r3) return r3;}"
-		@"var box=document.querySelector('.relative.aspect-video, [class*=\"aspect-video\"]');"
-		@"if(box){var r4=pack(box,'PLAYER'); if(r4) return r4;}"
-		@"return 'NONE';"
-		@"})()";
+/**
+ Trova un target cliccabile sulla pagina IN PRIMO PIANO (landing ads / creativo)
+ e lo tocca con un dito reale. Senza questo il popunder si apre e si chiude ma
+ nessun click arriva al tag: Relay conta 0.
+ */
+static NSString *const kMiaoJSFindAdTarget =
+	@"(function(){"
+	@"function visible(el){"
+	@"  if(!el) return false;"
+	@"  var r=el.getBoundingClientRect();"
+	@"  return r.width>18&&r.height>18&&r.bottom>8&&r.top<window.innerHeight-8;"
+	@"}"
+	@"function pack(el,tag){"
+	@"  if(!el||!visible(el)) return null;"
+	@"  var r=el.getBoundingClientRect();"
+	@"  var fx=0.5+(Math.random()-0.5)*0.45, fy=0.5+(Math.random()-0.5)*0.45;"
+	@"  var h=el.getAttribute('real-href')||el.href||el.getAttribute('href')||el.getAttribute('data-href')||'';"
+	@"  return tag+'|'+Math.round(r.left+r.width*fx)+','+Math.round(r.top+r.height*fy)+'|'+(h||'').toString().slice(0,100);"
+	@"}"
+	@"var sels=["
+	@"  'a.exo-native-widget-item[real-href]',"
+	@"  'a[real-href*=\"click\"]',"
+	@"  'a[href*=\"click.php\"]',"
+	@"  'a[href*=\"/click\"]',"
+	@"  'a[href*=\"out.php\"]',"
+	@"  'a[href*=\"redirect\"]',"
+	@"  '[data-click-url]',"
+	@"  'a[href^=\"http\"]:not([href*=\"noxreel\"])',"
+	@"  'button',"
+	@"  '[role=button]',"
+	@"  'a[href]'"
+	@"];"
+	@"for(var s=0;s<sels.length;s++){"
+	@"  var nodes=[].slice.call(document.querySelectorAll(sels[s]));"
+	@"  for(var i=0;i<nodes.length;i++){"
+	@"    var el=nodes[i];"
+	@"    var t=((el.innerText||el.getAttribute('aria-label')||'')+'').toLowerCase();"
+	@"    if(/skip|salta|close|chiudi|accept cookie|accetta/.test(t)) continue;"
+	@"    var h=(el.getAttribute('real-href')||el.href||el.getAttribute('href')||'').toLowerCase();"
+	@"    if(/noxreel\\.uk/.test(h)&&!/click|out|go|redirect|relay/.test(h)) continue;"
+	@"    var r=pack(el, sels[s].slice(0,12));"
+	@"    if(r) return r;"
+	@"  }"
+	@"}"
+	@"var ctaRe=/learn\\s*more|visit|scopri|visita|continua|click\\s*here|vai|annuncio|advertiser|download|install|play|guarda/i;"
+	@"var btns=[].slice.call(document.querySelectorAll('a,button,[role=button],div[onclick]'));"
+	@"for(var j=0;j<btns.length;j++){"
+	@"  if(ctaRe.test((btns[j].innerText||btns[j].getAttribute('aria-label')||'')+'')){"
+	@"    var r2=pack(btns[j],'CTA');"
+	@"    if(r2) return r2;"
+	@"  }"
+	@"}"
+	/* ultimo tentativo: area centrale del body (creativo a tutto schermo) */
+	@"var W=window.innerWidth,H=window.innerHeight;"
+	@"var x=Math.round(W*(0.35+Math.random()*0.3)), y=Math.round(H*(0.35+Math.random()*0.3));"
+	@"var el=document.elementFromPoint(x,y);"
+	@"if(el){"
+	@"  var hit=el.closest&&el.closest('a,button,[role=button],[onclick],img');"
+	@"  if(hit){var r3=pack(hit,'HIT'); if(r3) return r3;}"
+	@"}"
+	@"return 'NONE';"
+	@"})()";
 
-	MiaoJS(js, ^(NSString *result) {
-		if (!result || [result hasPrefix:@"NONE"]) {
-			// meglio non fare nulla che tappare a caso in mezzo allo schermo
-			MiaoAck(@"clickad: nessun annuncio visibile");
-			MiaoToast(@"Ads assenti");
+static void MiaoTapAdOnFront(void (^done)(BOOL ok, NSString *detail)) {
+	if (!MiaoForeignFront()) {
+		if (done) done(NO, @"sito davanti, niente creativo");
+		return;
+	}
+	MiaoJSFront(kMiaoJSFindAdTarget, ^(NSString *result) {
+		if (!result.length || [result hasPrefix:@"NONE"]) {
+			MiaoAck([NSString stringWithFormat:@"ad-click: nessun target\n%@", MiaoWebState()]);
+			if (done) done(NO, @"nessun target cliccabile");
 			return;
 		}
 		NSArray *parts = [result componentsSeparatedByString:@"|"];
 		NSString *tag = parts.firstObject ?: @"AD";
 		CGPoint vp = parts.count >= 2 ? MiaoParseXY(parts[1]) : CGPointZero;
-		MiaoAck([NSString stringWithFormat:@"clickad %@", result]);
-		if (vp.x > 1) {
-			MiaoTrustedTapViewport(vp, [NSString stringWithFormat:@"ad-%@", tag]);
-			MiaoToast([NSString stringWithFormat:@"Ads tap %@", tag]);
-		} else {
-			MiaoToast([NSString stringWithFormat:@"Ads %@", tag]);
+		MiaoAck([NSString stringWithFormat:@"ad-click %@", result]);
+		if (vp.x < 1) {
+			if (done) done(NO, result);
+			return;
 		}
+		/* esitazione umana sul creativo prima del tap */
+		MiaoAfter(MiaoBetween(0.4, 1.4), ^{
+			BOOL ok = MiaoTrustedTapFront(vp, [NSString stringWithFormat:@"ad-%@", tag]);
+			MiaoToast(ok ? [NSString stringWithFormat:@"Ads tap %@", tag]
+						 : @"Ads tap NO");
+			if (done) done(ok, result);
+		});
+	});
+}
+
+/// Click ads manuale (comando): stessa strada del run, sulla pagina davanti.
+static void MiaoActClickAd(void) {
+	MiaoToast(@"Click ads...");
+	MiaoTapAdOnFront(^(BOOL ok, NSString *detail) {
+		if (!ok) MiaoToast(@"Ads assenti");
+		else MiaoAck([NSString stringWithFormat:@"clickad ok %@", detail ?: @""]);
 	});
 }
 
@@ -2363,49 +2413,44 @@ static void MiaoRunSecondTap(void) {
 }
 
 /**
- Resta sull'ad come una persona: guarda, magari scrolla un po', esita, poi chiude.
+ Resta sull'ad come una persona: guarda, eventualmente clicca il creativo,
+ scrolla un po', esita, poi chiude.
 
- La chiusura a orologio (2s fissi) e' quello che faceva sembrare robotiche le
- sessioni dopo la prima. Il tempo totale viene da MiaoAdDwell e si spezza in
- pezzi irregolari.
+ Il click sul creativo e' quello che Relay puo' contare: aprire e chiudere la
+ scheda senza toccare la landing non genera alcun click nel tag.
  */
 static void MiaoLingerOnAd(void (^done)(void)) {
 	NSTimeInterval budget = MiaoAdDwell();
-	NSTimeInterval t0 = MiaoBetween(1.2, MIN(3.5, budget * 0.45));
+	NSTimeInterval t0 = MiaoBetween(1.4, MIN(3.8, budget * 0.4));
 	MiaoLog([NSString stringWithFormat:@"ad dwell total=%.1fs first=%.1fs mood=%ld",
 		budget, t0, (long)gMood]);
 	MiaoToast([NSString stringWithFormat:@"Ads… %.0fs", budget]);
 
 	MiaoAfter(t0, ^{
-		void (^finish)(void) = ^{
-			NSTimeInterval left = MAX(1.2, budget - t0);
-			NSTimeInterval hesitate = MiaoBetween(0.8, MIN(3.2, left * 0.55));
-			MiaoAfter(hesitate, ^{ if (done) done(); });
-		};
+		void (^afterClick)(void) = ^{
+			void (^finish)(void) = ^{
+				NSTimeInterval hesitate = MiaoBetween(1.0, 3.0);
+				MiaoAfter(hesitate, ^{ if (done) done(); });
+			};
 
-		CGRect area;
-		BOOL canScroll = MiaoContentArea(&area);
-		BOOL wantSecond = canScroll && (gMood == 0 || MiaoRng() < 0.55);
-
-		if (!canScroll) {
-			finish();
-			return;
-		}
-
-		CGFloat dy1 = 70 + (CGFloat)(MiaoRng() * 200);
-		if (MiaoRng() < 0.3) dy1 = -dy1;
-		MiaoGestureScroll(dy1, ^{
-			if (!wantSecond) {
-				MiaoAfter(MiaoBetween(0.6, 1.8), finish);
+			CGRect area;
+			BOOL canScroll = MiaoContentArea(&area);
+			if (!canScroll) {
+				finish();
 				return;
 			}
-			MiaoAfter(MiaoBetween(0.7, 2.0), ^{
-				CGFloat dy2 = 60 + (CGFloat)(MiaoRng() * 160);
-				if (MiaoRng() < 0.4) dy2 = -dy2;
-				MiaoGestureScroll(dy2, ^{
-					MiaoAfter(MiaoBetween(0.6, 1.8), finish);
-				});
+			CGFloat dy1 = 70 + (CGFloat)(MiaoRng() * 180);
+			if (MiaoRng() < 0.35) dy1 = -dy1;
+			MiaoGestureScroll(dy1, ^{
+				MiaoAfter(MiaoBetween(0.7, 1.8), finish);
 			});
+		};
+
+		/* Click sul creativo (CTA / link): e' il passo che mancava a Relay. */
+		MiaoTapAdOnFront(^(BOOL ok, NSString *detail) {
+			MiaoStepResult(@"ad-click", ok, detail ?: @"");
+			/* dopo il tap resta un attimo sulla pagina (anche se ha navigato) */
+			MiaoAfter(MiaoBetween(1.2, 2.8), afterClick);
 		});
 	});
 }
@@ -2459,10 +2504,10 @@ static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
 		if (done) done();
 		return;
 	}
-	CGFloat dy = 160 + (CGFloat)(MiaoRng() * 340);
-	if (gMood == 2) dy = 120 + (CGFloat)(MiaoRng() * 200);
-	if (gMood == 0) dy = 220 + (CGFloat)(MiaoRng() * 380);
-	if (MiaoRng() < 0.18) dy = -(80 + (CGFloat)(MiaoRng() * 140));
+	CGFloat dy = 160 + (CGFloat)(MiaoRng() * 280);
+	if (gMood == 2) dy = 120 + (CGFloat)(MiaoRng() * 180);
+	if (gMood == 0) dy = 180 + (CGFloat)(MiaoRng() * 260);
+	if (MiaoRng() < 0.18) dy = -(80 + (CGFloat)(MiaoRng() * 120));
 	MiaoGestureScroll(dy, ^{
 		MiaoAfter(MiaoHumanDelay(0.7, 1.4), ^{
 			MiaoExploreHome(left - 1, done);
@@ -2483,9 +2528,9 @@ static void MiaoRunPickAndTap(void) {
 		});
 		return;
 	}
-	NSInteger passes = (gMood == 0) ? (2 + (MiaoRng() < 0.5 ? 1 : 0))
+	NSInteger passes = (gMood == 0) ? (1 + (MiaoRng() < 0.55 ? 1 : 0))
 					 : (gMood == 2) ? 1
-					 : (1 + (MiaoRng() < 0.55 ? 1 : 0));
+					 : (1 + (MiaoRng() < 0.4 ? 1 : 0));
 	MiaoToast([NSString stringWithFormat:@"Scroll x%ld…", (long)passes]);
 	MiaoExploreHome(passes, ^{
 		MiaoJSFront(kMiaoJSScrollY, ^(NSString *y) {
@@ -2505,11 +2550,46 @@ static void MiaoRunPickAndTap(void) {
 						[NSString stringWithFormat:@"indice %ld mood=%ld", (long)idx, (long)gMood]);
 					MiaoScrollToThumb(idx, 0, ^(BOOL ok, NSString *raw) {
 						if (!ok) {
-							MiaoStepResult(@"scroll-video", NO, raw ?: @"?");
-							MiaoRunEnd([NSString stringWithFormat:@"video %ld non raggiunto (%@)", (long)idx, raw], NO);
+							/* persona curiosa: ripiega su un video vicino invece di fallire */
+							MiaoJS(kMiaoJSThumbList, ^(NSString *listRaw) {
+								NSArray *parts = [listRaw componentsSeparatedByString:@"|"];
+								NSString *list = parts.firstObject ?: @"";
+								NSInteger fallback = -1;
+								for (NSString *pair in [list componentsSeparatedByString:@","]) {
+									NSArray *kv = [pair componentsSeparatedByString:@":"];
+									if (kv.count < 2) continue;
+									CGFloat top = [kv[1] doubleValue];
+									if (top > -40 && top < 500) { fallback = [kv[0] integerValue]; break; }
+								}
+								if (fallback < 0) {
+									MiaoStepResult(@"scroll-video", NO, raw ?: @"?");
+									MiaoRunEnd([NSString stringWithFormat:@"video %ld non raggiunto (%@)", (long)idx, raw], NO);
+									return;
+								}
+								gRunThumb = fallback;
+								MiaoStepResult(@"scelta-video", YES,
+									[NSString stringWithFormat:@"fallback %ld (era %ld)", (long)fallback, (long)idx]);
+								MiaoScrollToThumb(fallback, 0, ^(BOOL ok2, NSString *raw2) {
+									if (!ok2) {
+										MiaoStepResult(@"scroll-video", NO, raw2 ?: @"?");
+										MiaoRunEnd(@"video non raggiunto anche in fallback", NO);
+										return;
+									}
+									MiaoAfter(MiaoHumanDelay(0.7, 1.8), ^{
+										MiaoToast(@"Click video");
+										MiaoTapThumb(fallback, @"video-1", ^(BOOL tapped) {
+											MiaoStepResult(@"tap-video", tapped, tapped ? @"" : @"tap rifiutato");
+											if (!tapped) {
+												MiaoRunEnd(@"primo tap non partito", NO);
+												return;
+											}
+											MiaoAfter(MiaoHumanDelay(2.8, 2.2), ^{ MiaoRunAfterFirstTap(); });
+										});
+									});
+								});
+							});
 							return;
 						}
-						/* guarda la miniatura: a volte di piu', a volte meno */
 						MiaoAfter(MiaoHumanDelay(0.7, 1.8), ^{
 							MiaoToast(@"Click video");
 							MiaoTapThumb(idx, @"video-1", ^(BOOL tapped) {
@@ -2691,7 +2771,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.11.4 esiti");
+	MiaoLog(@"safari ready 0.11.5 esiti");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -2841,7 +2921,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.11.4 x%ld", (long)n]);
+	MiaoLog([NSString stringWithFormat:@"session 0.11.5 x%ld", (long)n]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld...", (long)n]);
 	/* Traccia batch da SpringBoard: cosi' il pannello vede qualcosa anche se
 	   Safari non riesce ancora a scrivere gli step del singolo run. */
@@ -2924,7 +3004,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.11.4 - app o 3x Vol");
+		MiaoToast(@"Miao 0.11.5 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
