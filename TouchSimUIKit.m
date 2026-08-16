@@ -95,17 +95,37 @@ static double MiaoRand01(void) {
 	return (double)arc4random_uniform(10001) / 10000.0;
 }
 
+/// RNG di sessione: se e' impostato, i tocchi di questo run hanno una "mano"
+/// diversa (hold, raggio, drift) invece della stessa distribuzione globale.
+static uint32_t gTouchRng = 0;
+
+void MiaoUIKitSetTouchSeed(uint32_t seed) {
+	gTouchRng = seed ? (seed | 1) : 0;
+}
+
+static double MiaoTouchRnd(void) {
+	if (!gTouchRng) return MiaoRand01();
+	gTouchRng ^= gTouchRng << 13;
+	gTouchRng ^= gTouchRng >> 17;
+	gTouchRng ^= gTouchRng << 5;
+	return (gTouchRng & 0xffffff) / (double)0xffffff;
+}
+
+static CGFloat MiaoTouchJitter(CGFloat amount) {
+	return (CGFloat)((MiaoTouchRnd() * 2.0 - 1.0) * amount);
+}
+
 static NSTimeInterval MiaoNow(void) {
 	return [[NSProcessInfo processInfo] systemUptime];
 }
 
 /// Impronta del dito: un pollice appoggiato copre ~8-16 pt e respira ad ogni frame.
 static void MiaoTouchRadius(UITouch *touch, CGFloat base) {
-	CGFloat r = base + MiaoJitter(0.6);
+	CGFloat r = base + MiaoTouchJitter(0.8);
 	if (!MiaoSetFloatIvar(touch, "_majorRadius", r))
 		MiaoSetDouble(touch, @"setMajorRadius:", r, nil);
-	MiaoSetFloatIvar(touch, "_majorRadiusTolerance", 4.0);
-	MiaoSetFloatIvar(touch, "_minorRadius", r * 0.86);
+	MiaoSetFloatIvar(touch, "_majorRadiusTolerance", 3.0 + MiaoTouchRnd() * 3.0);
+	MiaoSetFloatIvar(touch, "_minorRadius", r * (0.78 + MiaoTouchRnd() * 0.16));
 }
 
 /// Configura la stessa UITouch per la fase corrente.
@@ -244,7 +264,8 @@ static BOOL MiaoRunGesture(CGPoint start, NSArray<NSValue *> *movePoints,
 	g.view = view;
 	g.points = movePoints;
 	g.step = movePoints.count ? totalTime / (double)movePoints.count : totalTime;
-	g.radius = 8.5 + (CGFloat)MiaoRand01() * 6.0;
+	/* Raggio diverso per sessione: 7-16 pt, non sempre ~8.5-14.5 uguale. */
+	g.radius = 7.0 + (CGFloat)MiaoTouchRnd() * 9.0;
 	g.done = done;
 
 	NSMutableString *missing = [NSMutableString string];
@@ -277,11 +298,21 @@ BOOL MiaoUIKitHumanTap(CGPoint winPt, NSString **why) {
 		return ok;
 	}
 
-	// Un dito reale striscia di 1-2 pt e resta giu' 55-130 ms.
-	NSTimeInterval hold = 0.055 + MiaoRand01() * 0.075;
-	CGPoint d1 = CGPointMake(winPt.x + MiaoJitter(1.4), winPt.y + MiaoJitter(1.4));
-	CGPoint d2 = CGPointMake(d1.x + MiaoJitter(1.0), d1.y + MiaoJitter(1.0));
-	NSArray *pts = @[ [NSValue valueWithCGPoint:d1], [NSValue valueWithCGPoint:d2] ];
+	/* Hold e drift cambiano con il seed: 40-180 ms, drift 0.5-3.5 pt.
+	   Un tocco sempre identico e' riconoscibile quanto un delay fisso. */
+	NSTimeInterval hold = 0.040 + MiaoTouchRnd() * 0.140;
+	CGFloat drift = 0.5 + (CGFloat)MiaoTouchRnd() * 3.0;
+	CGPoint d1 = CGPointMake(winPt.x + MiaoTouchJitter(drift), winPt.y + MiaoTouchJitter(drift));
+	CGPoint d2 = CGPointMake(d1.x + MiaoTouchJitter(drift * 0.7), d1.y + MiaoTouchJitter(drift * 0.7));
+	NSInteger nMove = 1 + (NSInteger)(MiaoTouchRnd() * 3); // 1-3 micro punti
+	NSMutableArray *pts = [NSMutableArray array];
+	CGPoint cur = d1;
+	[pts addObject:[NSValue valueWithCGPoint:cur]];
+	for (NSInteger i = 1; i < nMove; i++) {
+		cur = CGPointMake(cur.x + MiaoTouchJitter(drift * 0.5), cur.y + MiaoTouchJitter(drift * 0.5));
+		[pts addObject:[NSValue valueWithCGPoint:cur]];
+	}
+	if (nMove < 2) [pts addObject:[NSValue valueWithCGPoint:d2]];
 	return MiaoRunGesture(winPt, pts, hold, @"tap", YES, why, nil);
 }
 

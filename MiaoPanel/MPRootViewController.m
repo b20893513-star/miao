@@ -24,6 +24,7 @@ static void MPSend(NSString *line, const char *note) {
 @property (nonatomic, strong) UITableView *table;
 @property (nonatomic, strong) UILabel *status;
 @property (nonatomic, strong) UISegmentedControl *count;
+@property (nonatomic, strong) UIStackView *personas;
 @property (nonatomic, strong) UIView *header;
 @property (nonatomic, strong) NSArray<MiaoRunReport *> *sessions;
 @property (nonatomic, strong) NSMutableSet<NSString *> *expanded;
@@ -62,8 +63,20 @@ static void MPSend(NSString *line, const char *note) {
 	[self reload];
 }
 
+- (UIButton *)personaButton:(NSString *)title mood:(NSString *)mood {
+	UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+	[b setTitle:title forState:UIControlStateNormal];
+	b.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+	b.backgroundColor = [UIColor secondarySystemFillColor];
+	b.layer.cornerRadius = 8;
+	b.contentEdgeInsets = UIEdgeInsetsMake(8, 10, 8, 10);
+	b.accessibilityIdentifier = mood;
+	[b addTarget:self action:@selector(startPersona:) forControlEvents:UIControlEventTouchUpInside];
+	return b;
+}
+
 - (void)buildHeader {
-	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 128)];
+	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 260)];
 
 	self.status = [UILabel new];
 	self.status.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
@@ -75,8 +88,30 @@ static void MPSend(NSString *line, const char *note) {
 	self.count.selectedSegmentIndex = 0;
 	self.count.translatesAutoresizingMaskIntoConstraints = NO;
 
+	UIButton *b0 = [self personaButton:@"Curioso" mood:@"curious"];
+	UIButton *b1 = [self personaButton:@"Casual" mood:@"casual"];
+	UIButton *b2 = [self personaButton:@"Mirato" mood:@"focused"];
+	UIButton *b3 = [self personaButton:@"Click ads" mood:@"clickall"];
+	UIButton *b4 = [self personaButton:@"Video lungo" mood:@"videolong"];
+
+	UIStackView *row1 = [[UIStackView alloc] initWithArrangedSubviews:@[ b0, b1, b2 ]];
+	row1.axis = UILayoutConstraintAxisHorizontal;
+	row1.distribution = UIStackViewDistributionFillEqually;
+	row1.spacing = 8;
+
+	UIStackView *row2 = [[UIStackView alloc] initWithArrangedSubviews:@[ b3, b4 ]];
+	row2.axis = UILayoutConstraintAxisHorizontal;
+	row2.distribution = UIStackViewDistributionFillEqually;
+	row2.spacing = 8;
+
+	self.personas = [[UIStackView alloc] initWithArrangedSubviews:@[ row1, row2 ]];
+	self.personas.axis = UILayoutConstraintAxisVertical;
+	self.personas.spacing = 8;
+	self.personas.translatesAutoresizingMaskIntoConstraints = NO;
+
 	[self.header addSubview:self.status];
 	[self.header addSubview:self.count];
+	[self.header addSubview:self.personas];
 	[NSLayoutConstraint activateConstraints:@[
 		[self.status.topAnchor constraintEqualToAnchor:self.header.topAnchor constant:6],
 		[self.status.leadingAnchor constraintEqualToAnchor:self.header.leadingAnchor constant:20],
@@ -84,16 +119,16 @@ static void MPSend(NSString *line, const char *note) {
 		[self.count.topAnchor constraintEqualToAnchor:self.status.bottomAnchor constant:10],
 		[self.count.leadingAnchor constraintEqualToAnchor:self.header.leadingAnchor constant:20],
 		[self.count.trailingAnchor constraintEqualToAnchor:self.header.trailingAnchor constant:-20],
-		[self.count.bottomAnchor constraintEqualToAnchor:self.header.bottomAnchor constant:-8],
+		[self.personas.topAnchor constraintEqualToAnchor:self.count.bottomAnchor constant:12],
+		[self.personas.leadingAnchor constraintEqualToAnchor:self.header.leadingAnchor constant:20],
+		[self.personas.trailingAnchor constraintEqualToAnchor:self.header.trailingAnchor constant:-20],
+		[self.personas.bottomAnchor constraintEqualToAnchor:self.header.bottomAnchor constant:-10],
 	]];
 	self.table.tableHeaderView = self.header;
 }
 
 - (void)buildToolbar {
 	self.navigationController.toolbarHidden = NO;
-	UIBarButtonItem *go = [[UIBarButtonItem alloc] initWithTitle:@"Avvia"
-														  style:UIBarButtonItemStyleDone
-														 target:self action:@selector(start)];
 	UIBarButtonItem *stop = [[UIBarButtonItem alloc] initWithTitle:@"Stop"
 															style:UIBarButtonItemStylePlain
 														   target:self action:@selector(stop)];
@@ -105,7 +140,7 @@ static void MPSend(NSString *line, const char *note) {
 	UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"Pulisci"
 															 style:UIBarButtonItemStylePlain
 															target:self action:@selector(clear)];
-	self.toolbarItems = @[ go, flex, stop, flex, diag, flex, clear ];
+	self.toolbarItems = @[ stop, flex, diag, flex, clear ];
 	self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
 		initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
 							 target:self action:@selector(reload)];
@@ -129,7 +164,7 @@ static void MPSend(NSString *line, const char *note) {
 	[super viewDidLayoutSubviews];
 	CGFloat w = self.table.bounds.size.width;
 	CGSize sz = [self.header systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height)];
-	CGFloat h = MAX(128, sz.height);
+	CGFloat h = MAX(260, sz.height);
 	if (fabs(self.header.frame.size.height - h) > 0.5 ||
 		fabs(self.header.frame.size.width - w) > 0.5) {
 		self.header.frame = CGRectMake(0, 0, w, h);
@@ -146,10 +181,12 @@ static void MPSend(NSString *line, const char *note) {
 	return [vals[(NSUInteger)i] integerValue];
 }
 
-- (void)start {
+- (void)startPersona:(UIButton *)sender {
+	NSString *mood = sender.accessibilityIdentifier ?: @"casual";
 	NSInteger n = [self chosenCount];
-	MPSend([NSString stringWithFormat:@"session %ld", (long)n], "com.noxlab.miao.session");
-	self.diagLine = [NSString stringWithFormat:@"Comando session %ld inviato a SpringBoard", (long)n];
+	MPSend([NSString stringWithFormat:@"session %ld %@", (long)n, mood],
+		"com.noxlab.miao.session");
+	self.diagLine = [NSString stringWithFormat:@"Avvio %ld × %@", (long)n, mood];
 	[self updateStatus];
 }
 
@@ -218,7 +255,7 @@ static void MPSend(NSString *line, const char *note) {
 		if (!exists && fbBytes == 0) {
 			[s appendString:@"Nessun file eventi: sandbox o tweak non ha scritto. Tocca Diagnosi."];
 		} else if (bytes == 0 && fbBytes == 0) {
-			[s appendString:@"File eventi vuoto. Avvia 1 sessione, poi tira per aggiornare."];
+			[s appendString:@"File eventi vuoto. Avvia una persona, poi tira per aggiornare."];
 		} else {
 			[s appendFormat:@"File %llu/%llu byte ma 0 sessioni. Tocca Diagnosi.",
 				bytes, fbBytes];
@@ -234,7 +271,7 @@ static void MPSend(NSString *line, const char *note) {
 		NSString *now = last.end > 0 ? @"" : @" · una in corso";
 		[s appendFormat:@"%ld complete, %ld riuscite%@", (long)done, (long)ok, now];
 	}
-	[s appendString:@"\nQuante sessioni avviare:"];
+	[s appendString:@"\nQuante sessioni · scegli persona:"];
 	if (self.diagLine.length) [s appendFormat:@"\n%@", self.diagLine];
 	self.status.text = s;
 }

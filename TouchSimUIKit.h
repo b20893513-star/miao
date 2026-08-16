@@ -14,6 +14,10 @@ extern "C" {
  Coordinate in punti FINESTRA. `why` (opzionale) riceve una diagnosi.
  */
 
+/// Fissa il generatore dei tocchi per questa sessione: hold, raggio e drift
+/// cambiano da un run all'altro invece di sembrare sempre lo stesso dito.
+void MiaoUIKitSetTouchSeed(uint32_t seed);
+
 /// Tap: down, micro-drift, up.
 BOOL MiaoUIKitHumanTap(CGPoint winPt, NSString **why);
 

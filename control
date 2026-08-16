@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.11.5
+Version: 0.12.0
 Architecture: iphoneos-arm64
-Description: Tap ad creative on front page (Relay clicks); safer personas with fallback.
+Description: Persona buttons (curious/casual/focused/clickall/videolong); watch+scrub after play; seeded touches.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
