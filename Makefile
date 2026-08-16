@@ -8,7 +8,7 @@ include $(THEOS)/makefiles/common.mk
 # l'HID resta come fallback. MiaoHID = backboardd best-effort.
 TWEAK_NAME = Miao MiaoHID
 
-Miao_FILES = Tweak.x MiaoCore.m TouchSimUIKit.m MiaoAX.m TouchSimSafari.m TouchSimBB.m
+Miao_FILES = Tweak.x MiaoCore.m TouchSimUIKit.m MiaoAX.m MiaoReport.m TouchSimSafari.m TouchSimBB.m
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation QuartzCore
 
@@ -17,3 +17,7 @@ MiaoHID_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -W
 MiaoHID_FRAMEWORKS = Foundation CoreFoundation CoreGraphics QuartzCore
 
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+# Pannello: app vera sulla home, cosi' i risultati si guardano senza SSH
+SUBPROJECTS += MiaoPanel
+include $(THEOS_MAKE_PATH)/aggregate.mk

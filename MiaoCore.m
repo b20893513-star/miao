@@ -10,6 +10,7 @@
 #import "TouchSimBB.h"
 #import "TouchSimUIKit.h"
 #import "MiaoAX.h"
+#import "MiaoReport.h"
 
 static NSInteger gVolCount = 0;
 static NSTimeInterval gVolWindowStart = 0;
@@ -21,6 +22,9 @@ static BOOL gSafariPollStarted = NO;
 static NSString *const kPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
 static NSString *const kHomeDefault = @"https://noxreel.uk/";
 static NSString *const kCmdPath = @"/var/mobile/Documents/miao-cmd.txt";
+/// Comandi per SpringBoard (pannello): separati da quelli di Safari, che
+/// consuma il suo file con un poll e li cancellerebbe.
+static NSString *const kSbCmdPath = @"/var/mobile/Documents/miao-sbcmd.txt";
 static NSString *const kAckPath = @"/var/mobile/Documents/miao-ack.txt";
 static NSString *const kLogPath = @"/var/mobile/Documents/miao-loaded.txt";
 static NSString *const kHidPath = @"/var/tmp/miao-hid.txt";
@@ -143,8 +147,21 @@ static NSString *MiaoSiteHost(void) {
 	return [h hasPrefix:@"www."] ? [h substringFromIndex:4] : h;
 }
 
+/**
+ Il confronto va fatto sull'host, non sulla stringa intera.
+
+ Le URL di redirect degli ads portano quasi sempre il dominio del publisher nei
+ parametri (`.../click.php?...&ref=noxreel.uk`): con un `containsString` quelle
+ pagine risultavano "il sito", e da li' in poi ogni decisione era sbagliata —
+ nessun popunder contato, tap non bloccati, JS eseguito nella pagina dell'ad.
+ */
 static BOOL MiaoIsSiteURL(NSString *url) {
-	return url.length && [url.lowercaseString containsString:MiaoSiteHost()];
+	if (!url.length) return NO;
+	NSString *h = [NSURL URLWithString:url].host.lowercaseString;
+	if (!h.length) return NO;
+	if ([h hasPrefix:@"www."]) h = [h substringFromIndex:4];
+	NSString *site = MiaoSiteHost();
+	return [h isEqualToString:site] || [h hasSuffix:[@"." stringByAppendingString:site]];
 }
 
 /// Ritardo casuale: le pause identiche sono la firma piu' facile da riconoscere.
@@ -329,12 +346,35 @@ static void MiaoJSIn(id wk, NSString *js, void (^done)(NSString *)) {
 	});
 }
 
+/// Per agire sul sito: la sua webview, anche se la scheda e' in secondo piano.
 static void MiaoJS(NSString *js, void (^done)(NSString *)) {
 	MiaoJSIn(MiaoBestWebView(), js, done);
 }
 
+/**
+ Per sapere dove siamo: la pagina che si vede adesso.
+
+ Chiedere "che path e'?" alla webview del sito mentre a schermo c'e' un ad e' il
+ modo di credersi sul video quando si e' altrove: il path del sito non cambia,
+ quindi la risposta e' sempre quella che ci aspettiamo e non ci accorgiamo di
+ niente.
+ */
+static void MiaoJSFront(NSString *js, void (^done)(NSString *)) {
+	MiaoJSIn(MiaoFrontWebView() ?: MiaoBestWebView(), js, done);
+}
+
+/// La pagina davanti non e' il sito. Vale anche quando l'URL non e' ancora
+/// committed: i popunder passano per about:blank prima del redirect, e in quella
+/// finestra di tempo contare per URL dice "nessun ad" mentre l'ad e' a schermo.
+static BOOL MiaoForeignFront(void) {
+	id front = MiaoFrontWebView();
+	return front && !MiaoIsSiteURL(MiaoWebViewURL(front));
+}
+
 /// Riporta la pagina del sito in primo piano (definita dopo le API schede).
 static void MiaoEnsureSiteFront(void (^done)(BOOL ok));
+/// Attende che la pagina davanti sia caricata e usabile (definita col flusso run).
+static void MiaoWaitReady(NSInteger tries, void (^done)(BOOL ok));
 
 static CGPoint MiaoParseXY(NSString *s) {
 	if (s.length < 3) return CGPointZero;
@@ -728,7 +768,18 @@ static void MiaoActCalib(void) {
 			MiaoToast(@"CAL: ad davanti");
 			return;
 		}
-		MiaoCalibRun();
+		/* Su un DOM ancora vuoto la sonda viene installata su un documento che
+		   il load sostituisce subito dopo: il touch arriva, ma il listener non
+		   c'e' piu' e la misura risulta "nessun touch". */
+		MiaoWaitReady(0, ^(BOOL ready) {
+			if (!ready) {
+				gProbeForce = NO;
+				MiaoAck(@"calib annullata, pagina non pronta");
+				MiaoToast(@"CAL: pagina non pronta");
+				return;
+			}
+			MiaoCalibRun();
+		});
 	});
 }
 
@@ -891,10 +942,15 @@ void MiaoStartHidWorker(void) {
 
 #pragma mark - Safari actions (human)
 
+/// La pagina che si vede e' caricata e contiene almeno un video utilizzabile.
 static void MiaoActReady(void (^done)(BOOL ok)) {
-	MiaoJS(@"(function(){return document.querySelectorAll('a[href*=\"/video/\"]').length+'|'+location.href;})()", ^(NSString *r) {
-		BOOL ok = r && ![r hasPrefix:@"0|"];
-		if (done) done(ok);
+	MiaoJSFront(@"(function(){return document.readyState+'|'"
+				@"+document.querySelectorAll('a[href*=\"/video/\"]').length;})()", ^(NSString *r) {
+		NSArray *p = [r componentsSeparatedByString:@"|"];
+		NSString *state = p.count ? p.firstObject : @"";
+		NSInteger n = p.count > 1 ? [p[1] integerValue] : 0;
+		BOOL loaded = [state isEqualToString:@"complete"] || [state isEqualToString:@"interactive"];
+		if (done) done(loaded && n > 0);
 	});
 }
 
@@ -1419,15 +1475,25 @@ static void MiaoCloseAdWebViews(void (^done)(NSInteger closed)) {
 }
 
 /**
- Quante pagine ads sono aperte. Conta le webview, non le schede: la lista
- schede arriva da API private che possono tornare vuote, le webview le vediamo
- sempre nella gerarchia.
+ Quante pagine estranee al sito sono aperte. Conta le webview, non le schede: la
+ lista schede arriva da API private che possono tornare vuote, le webview le
+ vediamo sempre nella gerarchia.
+
+ Una webview senza URL conta solo se e' visibile. Cosi' prendiamo il popunder
+ nei primi secondi, quando l'URL non e' ancora committed, senza contare le
+ webview di servizio di Safari (start page, preview) che stanno sempre in giro.
  */
-static NSInteger MiaoAdTabCount(void) {
+static NSInteger MiaoForeignTabCount(void) {
+	id site = MiaoSiteWebView();
 	NSInteger n = 0;
 	for (UIView *v in MiaoAllWebViews()) {
+		if (v == site) continue;
 		NSString *u = MiaoWebViewURL(v);
-		if (u.length && !MiaoIsSiteURL(u)) n++;
+		if (u.length) {
+			if (!MiaoIsSiteURL(u)) n++;
+		} else if (MiaoWKVisible(v)) {
+			n++;
+		}
 	}
 	return n;
 }
@@ -1571,9 +1637,12 @@ static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
  */
 static void MiaoGoBackHuman(void (^done)(BOOL ok)) {
 	NSString *pathJS = @"(function(){return location.pathname;})()";
-	MiaoJS(pathJS, ^(NSString *before) {
+	// il confronto prima/dopo va fatto sulla pagina che si vede, altrimenti un
+	// path che non cambia perche' stiamo leggendo un'altra scheda diventa "back
+	// fallito" anche quando lo swipe e' andato a buon fine
+	MiaoJSFront(pathJS, ^(NSString *before) {
 		NSString *from = before ?: @"";
-		UIView *wk = MiaoBestWebView();
+		UIView *wk = MiaoFrontWebView() ?: MiaoBestWebView();
 		UIWindow *win = wk.window;
 		CGRect b = win ? win.bounds : UIScreen.mainScreen.bounds;
 		CGFloat y = b.size.height * (0.42 + (CGFloat)MiaoRnd() * 0.2);
@@ -1585,7 +1654,7 @@ static void MiaoGoBackHuman(void (^done)(BOOL ok)) {
 		MiaoLog([NSString stringWithFormat:@"back: swipe bordo %@ (%@)", sent ? @"ok" : @"NO", why ?: @"-"]);
 
 		MiaoAfter(MiaoHumanDelay(1.6, 0.9), ^{
-			MiaoJS(pathJS, ^(NSString *mid) {
+			MiaoJSFront(pathJS, ^(NSString *mid) {
 				if (mid.length && ![mid isEqualToString:from]) {
 					if (done) done(YES);
 					return;
@@ -1597,7 +1666,7 @@ static void MiaoGoBackHuman(void (^done)(BOOL ok)) {
 					return;
 				}
 				MiaoAfter(MiaoHumanDelay(1.6, 0.9), ^{
-					MiaoJS(pathJS, ^(NSString *after) {
+					MiaoJSFront(pathJS, ^(NSString *after) {
 						if (done) done(after.length && ![after isEqualToString:from]);
 					});
 				});
@@ -1662,15 +1731,15 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
  di Safari, e solo se quella strada non porta a casa con `window.close()`.
  */
 static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
-	NSInteger before = MiaoAdTabCount();
-	if (before <= 0) {
+	NSInteger before = MiaoForeignTabCount();
+	if (before <= 0 && !MiaoForeignFront()) {
 		if (done) done(MiaoSiteIsFront());
 		return;
 	}
 	MiaoCloseAdTabNative(^(BOOL nativeOk) {
-		if (nativeOk && MiaoAdTabCount() < before && MiaoSiteIsFront()) {
+		if (nativeOk && MiaoForeignTabCount() < before && MiaoSiteIsFront()) {
 			MiaoAck([NSString stringWithFormat:@"ads chiuse dalla UI di Safari (%ld -> %ld)",
-				(long)before, (long)MiaoAdTabCount()]);
+				(long)before, (long)MiaoForeignTabCount()]);
 			if (done) done(YES);
 			return;
 		}
@@ -1712,7 +1781,7 @@ static void MiaoLoopFinish(void) {
 }
 
 static void MiaoLoopAfterTap(void) {
-	NSInteger ads = MiaoAdTabCount();
+	NSInteger ads = MiaoForeignTabCount();
 	if (ads <= 0) {
 		// nessun popunder: normale, Exo ha un frequency cap per utente
 		MiaoAfter(MiaoHumanDelay(0.9, 1.0), ^{ MiaoLoopStep(); });
@@ -1835,6 +1904,35 @@ static void MiaoRunAfterFirstTap(void);
 static void MiaoRunSecondTap(void);
 static void MiaoRunWaitSkip(void);
 
+/// Un passo con esito: finisce nel log leggibile e nel report del pannello.
+static void MiaoStepResult(NSString *name, BOOL ok, NSString *detail) {
+	MiaoReportStep(name, ok, detail);
+	MiaoLog([NSString stringWithFormat:@"step %@ %@ %@",
+		name, ok ? @"OK" : @"KO", detail ?: @""]);
+}
+
+static NSString *const kMiaoJSVideoState =
+	@"(function(){var v=document.querySelector('video[data-nox-content],video');"
+	@"return (v?(v.paused?'paused':'playing'):'novideo')+'|'+location.pathname;})()";
+
+/**
+ Riporta Safari a uno stato noto: nessuna pagina esterna aperta, sito davanti.
+
+ Senza questo il run successivo parte dove ha smesso il precedente, e i suoi
+ passi misurano il residuo invece del comportamento vero.
+ */
+static void MiaoRunTeardown(void (^done)(void)) {
+	if (!MiaoForeignFront() && MiaoForeignTabCount() == 0) {
+		if (done) done();
+		return;
+	}
+	MiaoCloseAdsHuman(^(BOOL siteFront) {
+		MiaoStepResult(@"teardown", siteFront,
+			[NSString stringWithFormat:@"estranee=%ld", (long)MiaoForeignTabCount()]);
+		if (done) done();
+	});
+}
+
 static void MiaoRunEnd(NSString *msg, BOOL ok) {
 	gRunBusy = NO;
 	// niente listener nostri lasciati sulla pagina quando non stiamo debuggando
@@ -1842,15 +1940,45 @@ static void MiaoRunEnd(NSString *msg, BOOL ok) {
 	MiaoAck([NSString stringWithFormat:@"run %@: %@", ok ? @"OK" : @"KO", msg]);
 	MiaoToast(ok ? [NSString stringWithFormat:@"Run OK %@", msg]
 				 : [NSString stringWithFormat:@"Run stop: %@", msg]);
+	/* Il teardown va registrato dentro la sessione, quindi prima della chiusura
+	   del report: se la pulizia non riesce e' un'informazione che serve leggere
+	   accanto al verdetto, non un dettaglio da perdere. */
+	MiaoRunTeardown(^{
+		MiaoReportEnd(ok, msg);
+		// SpringBoard aspetta questo per passare al passo successivo, invece di
+		// tirare a indovinare quanto durera' il run
+		notify_post("com.noxlab.miao.runend");
+	});
 }
 
-/// 6) tap sullo skip appena si sblocca, altrimenti riprova
+/**
+ 6) tap sullo skip appena si sblocca.
+
+ Il passo e' riuscito solo se il video parte: "ho tappato" non basta, perche' il
+ tap puo' essere stato rifiutato (pagina esterna davanti) e perche' il countdown
+ di una scheda in secondo piano non avanza mai — WebKit sospende timer e
+ requestAnimationFrame quando la scheda non e' visibile.
+ */
 static void MiaoRunWaitSkip(void) {
 	if (gRunSkipTries++ > 40) {
+		MiaoStepResult(@"skip", NO, @"mai sbloccato in 40 letture");
 		MiaoRunEnd(@"skip mai sbloccato", NO);
 		return;
 	}
-	MiaoJS(kMiaoJSFindSkip, ^(NSString *r) {
+	// aspettare lo skip di una pagina che non si vede e' tempo buttato
+	if (MiaoForeignFront()) {
+		MiaoStepResult(@"skip-attesa", NO, @"pagina esterna davanti, recupero");
+		MiaoCloseAdsHuman(^(BOOL front) {
+			if (!front) {
+				MiaoRunEnd(@"pagina esterna davanti, sito non recuperato", NO);
+				return;
+			}
+			MiaoAfter(MiaoHumanDelay(0.8, 0.6), ^{ MiaoRunWaitSkip(); });
+		});
+		return;
+	}
+
+	MiaoJSFront(kMiaoJSFindSkip, ^(NSString *r) {
 		BOOL ready = [r hasPrefix:@"READY|"];
 		BOOL waiting = [r hasPrefix:@"WAIT|"];
 
@@ -1871,13 +1999,28 @@ static void MiaoRunWaitSkip(void) {
 		}
 		MiaoAck([NSString stringWithFormat:@"skip %@ (%@)", r, force ? @"forzato" : @"pronto"]);
 		MiaoToast(@"Skip!");
-		MiaoTrustedTapViewport(vp, @"skip");
+
+		BOOL tapped = MiaoTrustedTapViewport(vp, @"skip");
+		if (!tapped) {
+			MiaoStepResult(@"skip-tap", NO, [NSString stringWithFormat:@"rifiutato (%@)", r]);
+			MiaoAfter(MiaoHumanDelay(1.0, 0.8), ^{ MiaoRunWaitSkip(); });
+			return;
+		}
 
 		MiaoAfter(MiaoHumanDelay(2.0, 1.0), ^{
-			MiaoJS(@"(function(){var v=document.querySelector('video[data-nox-content],video');"
-				   @"return (v?(v.paused?'paused':'playing'):'novideo')+'|'+location.pathname;})()",
-				   ^(NSString *st) {
-				MiaoRunEnd([NSString stringWithFormat:@"skip fatto, %@", st ?: @"?"], YES);
+			MiaoJSFront(kMiaoJSVideoState, ^(NSString *st) {
+				BOOL playing = [st hasPrefix:@"playing"];
+				MiaoStepResult(@"skip", playing, st ?: @"?");
+				if (playing) {
+					MiaoRunEnd([NSString stringWithFormat:@"video in riproduzione (%@)", st], YES);
+					return;
+				}
+				// tappato ma il video non e' partito: puo' essere ancora l'overlay
+				if (gRunSkipTries <= 34) {
+					MiaoAfter(MiaoHumanDelay(1.2, 0.8), ^{ MiaoRunWaitSkip(); });
+					return;
+				}
+				MiaoRunEnd([NSString stringWithFormat:@"skip tappato ma video %@", st ?: @"?"], NO);
 			});
 		});
 	});
@@ -1885,14 +2028,31 @@ static void MiaoRunWaitSkip(void) {
 
 /// 5) secondo tap sullo STESSO video: il primo l'ha consumato il popunder
 static void MiaoRunSecondTap(void) {
-	MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *path) {
+	/* La domanda "sono sul video?" va fatta alla pagina che si vede. Chiedendola
+	   alla webview del sito mentre davanti c'e' un ad, la risposta e' sempre
+	   quella che ci aspettiamo e non ci accorgiamo di essere altrove. */
+	if (MiaoForeignFront()) {
+		MiaoStepResult(@"ritorno-sito", NO, @"pagina esterna ancora davanti");
+		MiaoCloseAdsHuman(^(BOOL front) {
+			if (!front) {
+				MiaoRunEnd(@"pagina esterna davanti, sito non recuperato", NO);
+				return;
+			}
+			MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
+		});
+		return;
+	}
+
+	MiaoJSFront(@"(function(){return location.pathname;})()", ^(NSString *path) {
 		if (path && [path containsString:@"/video/"]) {
 			MiaoToast(@"Sul video");
+			MiaoStepResult(@"pagina-video", YES, path);
 			gRunSkipTries = 0;
 			MiaoAfter(MiaoHumanDelay(1.5, 1.0), ^{ MiaoRunWaitSkip(); });
 			return;
 		}
 		if (gRunTapTries++ > 2) {
+			MiaoStepResult(@"pagina-video", NO, path ?: @"?");
 			MiaoRunEnd(@"il video non si apre", NO);
 			return;
 		}
@@ -1900,13 +2060,13 @@ static void MiaoRunSecondTap(void) {
 		// la pagina puo' essersi ricaricata: ritrova la posizione prima di toccare
 		MiaoScrollToThumb(gRunThumb, 0, ^(BOOL ok, NSString *raw) {
 			if (!ok) {
-				MiaoAck([NSString stringWithFormat:@"run: thumb %ld non ritrovato (%@)", (long)gRunThumb, raw]);
+				MiaoStepResult(@"scroll-video-2", NO, raw ?: @"?");
 				MiaoRunEnd(@"video non ritrovato", NO);
 				return;
 			}
 			MiaoAfter(MiaoHumanDelay(0.5, 0.8), ^{
 				MiaoTapThumb(gRunThumb, @"video-2", ^(BOOL tapped) {
-					(void)tapped;
+					MiaoStepResult(@"tap-video-2", tapped, tapped ? @"" : @"tap rifiutato");
 					MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoRunSecondTap(); });
 				});
 			});
@@ -1916,12 +2076,15 @@ static void MiaoRunSecondTap(void) {
 
 /// 4) resta sull'ad il tempo di una persona, chiudi la scheda, torna al sito
 static void MiaoRunAfterFirstTap(void) {
-	NSInteger ads = MiaoAdTabCount();
-	if (ads <= 0) {
-		MiaoLog(@"run: nessun popunder dopo il primo tap");
+	NSInteger ads = MiaoForeignTabCount();
+	if (ads <= 0 && !MiaoForeignFront()) {
+		/* Nessun popunder non e' un errore del run: dipende dal frequency cap.
+		   Va registrato come tale, altrimenti i risultati non si leggono. */
+		MiaoStepResult(@"popunder", YES, @"nessuno (frequency cap)");
 		MiaoRunSecondTap();
 		return;
 	}
+	MiaoStepResult(@"popunder", YES, [NSString stringWithFormat:@"%ld pagine esterne", (long)ads]);
 	MiaoToast([NSString stringWithFormat:@"Ads +%ld", (long)ads]);
 	/* Chi finisce su un popunder ci guarda un attimo prima di chiuderlo: un
 	   paio di secondi e un piccolo scroll, non una chiusura istantanea. */
@@ -1930,6 +2093,8 @@ static void MiaoRunAfterFirstTap(void) {
 			MiaoAfter(MiaoHumanDelay(1.6, 2.0), ^{
 				MiaoToast(@"Chiudo ads");
 				MiaoCloseAdsHuman(^(BOOL front) {
+					MiaoStepResult(@"chiudi-ads", front,
+						[NSString stringWithFormat:@"estranee=%ld", (long)MiaoForeignTabCount()]);
 					if (!front) {
 						MiaoRunEnd(@"non torno sul sito", NO);
 						return;
@@ -1946,28 +2111,37 @@ static void MiaoRunPickAndTap(void) {
 	MiaoToast(@"Scroll...");
 	// una passata esplorativa, come chi arriva sulla home e guarda cosa c'e'
 	MiaoGestureScroll(200 + (CGFloat)arc4random_uniform(300), ^{
-		MiaoAfter(MiaoHumanDelay(0.9, 1.6), ^{
-			MiaoInstallProbe(nil);
-			MiaoPickThumb(^(NSInteger idx) {
-				if (idx < 0) {
-					MiaoRunEnd(@"nessun video in pagina", NO);
-					return;
-				}
-				gRunThumb = idx;
-				MiaoScrollToThumb(idx, 0, ^(BOOL ok, NSString *raw) {
-					if (!ok) {
-						MiaoRunEnd([NSString stringWithFormat:@"video %ld non raggiunto (%@)", (long)idx, raw], NO);
+		MiaoJSFront(kMiaoJSScrollY, ^(NSString *y) {
+			MiaoStepResult(@"scroll", [y integerValue] > 40,
+				[NSString stringWithFormat:@"y=%@", y ?: @"?"]);
+			MiaoAfter(MiaoHumanDelay(0.9, 1.6), ^{
+				MiaoInstallProbe(nil);
+				MiaoPickThumb(^(NSInteger idx) {
+					if (idx < 0) {
+						MiaoStepResult(@"scelta-video", NO, @"nessun link video nel DOM");
+						MiaoRunEnd(@"nessun video in pagina", NO);
 						return;
 					}
-					// si guarda la miniatura prima di toccarla
-					MiaoAfter(MiaoHumanDelay(0.6, 1.3), ^{
-						MiaoToast(@"Click video");
-						MiaoTapThumb(idx, @"video-1", ^(BOOL tapped) {
-							if (!tapped) {
-								MiaoRunEnd(@"primo tap non partito", NO);
-								return;
-							}
-							MiaoAfter(MiaoHumanDelay(3.2, 1.5), ^{ MiaoRunAfterFirstTap(); });
+					gRunThumb = idx;
+					MiaoStepResult(@"scelta-video", YES,
+						[NSString stringWithFormat:@"indice %ld", (long)idx]);
+					MiaoScrollToThumb(idx, 0, ^(BOOL ok, NSString *raw) {
+						if (!ok) {
+							MiaoStepResult(@"scroll-video", NO, raw ?: @"?");
+							MiaoRunEnd([NSString stringWithFormat:@"video %ld non raggiunto (%@)", (long)idx, raw], NO);
+							return;
+						}
+						// si guarda la miniatura prima di toccarla
+						MiaoAfter(MiaoHumanDelay(0.6, 1.3), ^{
+							MiaoToast(@"Click video");
+							MiaoTapThumb(idx, @"video-1", ^(BOOL tapped) {
+								MiaoStepResult(@"tap-video", tapped, tapped ? @"" : @"tap rifiutato");
+								if (!tapped) {
+									MiaoRunEnd(@"primo tap non partito", NO);
+									return;
+								}
+								MiaoAfter(MiaoHumanDelay(3.2, 1.5), ^{ MiaoRunAfterFirstTap(); });
+							});
 						});
 					});
 				});
@@ -1976,40 +2150,81 @@ static void MiaoRunPickAndTap(void) {
 	});
 }
 
-/// 1) sito in primo piano e sulla home
+/// La home e' davvero utilizzabile: DOM pronto e almeno un video in lista.
+static void MiaoWaitReady(NSInteger tries, void (^done)(BOOL ok)) {
+	MiaoActReady(^(BOOL ok) {
+		if (ok || tries >= 14) {
+			if (done) done(ok);
+			return;
+		}
+		MiaoAfter(0.6, ^{ MiaoWaitReady(tries + 1, done); });
+	});
+}
+
+/// Quante volte il run ha rinviato la partenza aspettando la calibrazione.
+static NSInteger gRunWaitCalib = 0;
+
+/// 1) sito in primo piano, sulla home, con la pagina caricata
 static void MiaoActRun(void) {
 	if (gRunBusy) {
 		MiaoToast(@"Run attivo");
 		return;
 	}
+	/* La calibrazione tappa un punto vuoto e misura dove atterra: se il run
+	   parte nel frattempo si scorre la pagina sotto la misura e il risultato
+	   non vale niente (gProbeForce e' alto solo durante la calibrazione). */
+	if (gProbeForce && gRunWaitCalib < 15) {
+		gRunWaitCalib++;
+		MiaoToast(@"Attendo calib");
+		MiaoAfter(2.0, ^{ MiaoActRun(); });
+		return;
+	}
+	gRunWaitCalib = 0;
 	gRunBusy = YES;
 	gRunTapTries = 0;
 	gRunSkipTries = 0;
 	gRunThumb = -1;
 	MiaoToast(@"Run...");
+	MiaoReportBegin(@"run", 0);
 
 	MiaoEnsureSiteFront(^(BOOL front) {
+		MiaoStepResult(@"sito-davanti", front, MiaoWebViewURL(MiaoFrontWebView()));
 		if (!front) {
 			MiaoRunEnd(@"sito non in primo piano", NO);
 			return;
 		}
 		MiaoRememberSiteTitle();
-		MiaoJS(@"(function(){return location.pathname;})()", ^(NSString *path) {
+
+		/* Prima di partire la pagina deve esistere davvero. Con i tempi fissi il
+		   run partiva su un DOM vuoto quando la rete era lenta, e il risultato
+		   era "nessun video in pagina" su un sito che funziona. */
+		void (^start)(void) = ^{
+			MiaoWaitReady(0, ^(BOOL ready) {
+				MiaoStepResult(@"home-pronta", ready, ready ? @"" : @"DOM senza link video");
+				if (!ready) {
+					MiaoRunEnd(@"home non pronta", NO);
+					return;
+				}
+				MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunPickAndTap(); });
+			});
+		};
+
+		MiaoJSFront(@"(function(){return location.pathname;})()", ^(NSString *path) {
 			if (path && [path containsString:@"/video/"]) {
 				// veniamo da un giro precedente: risali alla lista col pollice
 				MiaoGoBackHuman(^(BOOL back) {
+					MiaoStepResult(@"indietro", back, back ? @"" : @"fallback openURL");
 					if (!back) MiaoOpenURL(MiaoHomeURL());
-					MiaoAfter(MiaoHumanDelay(1.8, 1.4), ^{ MiaoRunPickAndTap(); });
+					MiaoAfter(MiaoHumanDelay(1.4, 1.0), start);
 				});
 				return;
 			}
 			if (!path.length) {
 				MiaoOpenURL(MiaoHomeURL());
-				MiaoAfter(MiaoHumanDelay(3.5, 1.5), ^{ MiaoRunPickAndTap(); });
+				MiaoAfter(MiaoHumanDelay(1.5, 1.0), start);
 				return;
 			}
-			// il tempo che serve a mettere a fuoco la pagina
-			MiaoAfter(MiaoHumanDelay(0.9, 1.4), ^{ MiaoRunPickAndTap(); });
+			start();
 		});
 	});
 }
@@ -2038,8 +2253,11 @@ static void MiaoHandle(NSString *cmd) {
 	} else if ([cmd isEqualToString:@"human"]) {
 		MiaoActHumanWatch();
 	} else if ([cmd isEqualToString:@"closeextra"]) {
-		NSInteger n = MiaoCloseNonNoxTabs();
-		MiaoToast([NSString stringWithFormat:@"Extra %@", @(n)]);
+		// le API private delle schede spesso non rispondono su iOS 16: qui serve
+		// la via che funziona davvero, altrimenti il ciclo dopo parte sporco
+		MiaoCloseAdsHuman(^(BOOL front) {
+			MiaoToast(front ? @"Pulito" : @"Extra: sito NO");
+		});
 	} else if ([cmd isEqualToString:@"where"]) {
 		MiaoActWhere(^(NSString *p) { MiaoToast(p ?: @"?"); });
 	} else if ([cmd isEqualToString:@"calib"]) {
@@ -2088,7 +2306,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.10.0 gesti");
+	MiaoLog(@"safari ready 0.11.0 esiti");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -2119,6 +2337,40 @@ void MiaoAfter(NSTimeInterval sec, void (^block)(void)) {
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(sec * NSEC_PER_SEC)), dispatch_get_main_queue(), block);
 }
 
+/// Attesa dell'esito del run: Safari posta `runend` quando ha finito e
+/// riportato. Il tetto di tempo esiste solo perche' Safari puo' morire.
+static void (^gRunEndBlock)(void) = nil;
+static BOOL gRunEndListening = NO;
+static NSInteger gRunEndGen = 0;
+
+static void MiaoRunEndListen(void) {
+	if (gRunEndListening || !MiaoIsSB()) return;
+	gRunEndListening = YES;
+	int token = 0;
+	notify_register_dispatch("com.noxlab.miao.runend", &token, dispatch_get_main_queue(), ^(int t) {
+		(void)t;
+		void (^b)(void) = gRunEndBlock;
+		gRunEndBlock = nil;
+		if (b) b();
+	});
+}
+
+static void MiaoAwaitRunEnd(NSTimeInterval timeout, void (^done)(BOOL fromSafari)) {
+	MiaoRunEndListen();
+	NSInteger gen = ++gRunEndGen;
+	gRunEndBlock = ^{
+		if (gen != gRunEndGen) return;
+		gRunEndGen++;
+		if (done) done(YES);
+	};
+	MiaoAfter(timeout, ^{
+		if (gen != gRunEndGen) return;
+		gRunEndGen++;
+		gRunEndBlock = nil;
+		if (done) done(NO);
+	});
+}
+
 static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	NSString *home = MiaoHomeURL();
 	NSTimeInterval watch = MiaoWatchSec();
@@ -2134,29 +2386,45 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	/* La calibrazione installa una sonda sulla pagina: si fa una volta sola e il
 	   risultato resta su disco. Se c'e' gia', non la rifacciamo. */
 	BOOL calibrated = [[NSFileManager defaultManager] fileExistsAtPath:kCalPath];
-	if (idx == 0 && !calibrated) MiaoAfter(4.6, ^{ MiaoSendCmd(@"calib"); });
+	NSTimeInterval runAt = 8.0;
+	if (idx == 0 && !calibrated) {
+		MiaoAfter(4.6, ^{ MiaoSendCmd(@"calib"); });
+		// la calibrazione ora aspetta il DOM prima di misurare: diamole spazio
+		runAt = 22.0;
+	}
 
 	/* Un solo passaggio, autonomo dentro Safari: scroll, click video, chiusura
 	   ads, ri-click, attesa dello skip, skip. SpringBoard non scandisce i passi,
-	   stima solo quando avra' finito per la fase di visione. */
-	MiaoAfter(8.0, ^{
+	   aspetta solo il verdetto. */
+	MiaoAfter(runAt, ^{
 		MiaoToast(@"Run...");
 		MiaoSendCmd(@"run");
-	});
-
-	// tap + ads + ri-tap ~20s, attesa skip fino a ~40s
-	NSTimeInterval runEnd = 8.0 + 70.0;
-
-	MiaoAfter(runEnd, ^{ MiaoSendCmd(@"human"); });
-	MiaoAfter(runEnd + watch, ^{
-		MiaoSendCmd(@"closeextra");
-		MiaoAfter(1.5, ^{ if (done) done(); });
+		/* Il passo successivo parte quando il run ha finito, non a un orario
+		   deciso prima: con i tempi fissi mandavamo `human` e `closeextra` su un
+		   run ancora in corso, e il ciclo dopo partiva su uno stato sporco. */
+		MiaoAwaitRunEnd(120.0, ^(BOOL fromSafari) {
+			MiaoLog(fromSafari ? @"cycle: run concluso" : @"cycle: timeout attesa run");
+			if (!fromSafari) MiaoToast(@"Run: timeout");
+			MiaoSendCmd(@"human");
+			MiaoAfter(watch, ^{
+				MiaoSendCmd(@"closeextra");
+				MiaoAfter(2.0, ^{ if (done) done(); });
+			});
+		});
 	});
 }
 
-static void MiaoStep(NSInteger i, NSInteger n);
+/// Generazione della sessione: `stop` la incrementa e i passi ancora in coda,
+/// che sono tutti dispatch_after gia' programmati, si accorgono e si spengono.
+static NSInteger gSessionGen = 0;
 
-static void MiaoStep(NSInteger i, NSInteger n) {
+static void MiaoStep(NSInteger i, NSInteger n, NSInteger gen);
+
+static void MiaoStep(NSInteger i, NSInteger n, NSInteger gen) {
+	if (gen != gSessionGen) {
+		MiaoLog(@"session: passo annullato");
+		return;
+	}
 	if (i >= n) {
 		gSessionBusy = NO;
 		MiaoToast(@"Fine sessione");
@@ -2164,20 +2432,68 @@ static void MiaoStep(NSInteger i, NSInteger n) {
 		return;
 	}
 	MiaoRunCycle(i, n, ^{
-		MiaoAfter(1.0, ^{ MiaoStep(i + 1, n); });
+		MiaoAfter(1.0, ^{ MiaoStep(i + 1, n, gen); });
 	});
 }
 
-static void MiaoSession(void) {
-	if (!MiaoIsSB() || gSessionBusy) {
-		if (gSessionBusy) MiaoToast(@"Busy");
+static void MiaoSessionStop(void) {
+	gSessionGen++;
+	gRunEndGen++;
+	gRunEndBlock = nil;
+	gSessionBusy = NO;
+	MiaoLog(@"session stop");
+	MiaoToast(@"Sessione fermata");
+}
+
+/// `cycles` a 0 = quanti dicono le preferenze.
+static void MiaoSessionRun(NSInteger cycles) {
+	if (!MiaoIsSB()) return;
+	if (gSessionBusy) {
+		MiaoToast(@"Busy");
 		return;
 	}
 	gSessionBusy = YES;
+	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog(@"session 0.10.0 gesti");
-	MiaoToast(@"Sessione 0.10.0...");
-	MiaoStep(0, MiaoCycles());
+	MiaoLog([NSString stringWithFormat:@"session 0.11.0 x%ld", (long)n]);
+	MiaoToast([NSString stringWithFormat:@"Sessione x%ld...", (long)n]);
+	MiaoStep(0, n, ++gSessionGen);
+}
+
+static void MiaoSession(void) {
+	MiaoSessionRun(0);
+}
+
+/**
+ Comandi che arrivano dal pannello. Vanno su un file loro: `miao-cmd.txt` lo
+ consuma Safari con un poll, quindi un comando per SpringBoard scritto la'
+ verrebbe mangiato dall'altro processo.
+ */
+static void MiaoStartSBCommands(void) {
+	if (!MiaoIsSB()) return;
+	static BOOL started = NO;
+	if (started) return;
+	started = YES;
+
+	int t1 = 0, t2 = 0;
+	notify_register_dispatch("com.noxlab.miao.session", &t1, dispatch_get_main_queue(), ^(int t) {
+		(void)t;
+		NSString *raw = [NSString stringWithContentsOfFile:kSbCmdPath
+												 encoding:NSUTF8StringEncoding error:nil];
+		[[NSFileManager defaultManager] removeItemAtPath:kSbCmdPath error:nil];
+		NSString *line = [[raw componentsSeparatedByCharactersInSet:
+			[NSCharacterSet newlineCharacterSet]] firstObject] ?: @"";
+		NSArray *parts = [line componentsSeparatedByString:@" "];
+		NSInteger n = parts.count > 1 ? [parts[1] integerValue] : 0;
+		MiaoLog([NSString stringWithFormat:@"pannello: sessione x%ld", (long)n]);
+		MiaoSessionRun(n);
+	});
+	notify_register_dispatch("com.noxlab.miao.stop", &t2, dispatch_get_main_queue(), ^(int t) {
+		(void)t;
+		[[NSFileManager defaultManager] removeItemAtPath:kSbCmdPath error:nil];
+		MiaoSessionStop();
+	});
+	MiaoRunEndListen();
 }
 
 #pragma mark - Volume
@@ -2207,7 +2523,11 @@ void MiaoBoot(void) {
 	if (gBootDone) return;
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
-	if (MiaoIsSB()) MiaoToast(@"Miao 0.10.0 - 3x Vol");
-	else if (MiaoIsSafari()) MiaoStartSafari();
+	if (MiaoIsSB()) {
+		MiaoStartSBCommands();
+		MiaoToast(@"Miao 0.11.0 - app o 3x Vol");
+	} else if (MiaoIsSafari()) {
+		MiaoStartSafari();
+	}
 }
 

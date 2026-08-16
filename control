@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.10.0
+Version: 0.11.0
 Architecture: iphoneos-arm64
-Description: Real gestures: swipe scroll, native tab close, edge-swipe back, no page traces.
+Description: Panel app with per-step results, host-based tab matching, verified skip, DOM-ready waits.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

@@ -9,10 +9,24 @@ EOF
 chown -R 501:501 "$SSH_DIR" 2>/dev/null || true
 chmod 700 "$SSH_DIR" 2>/dev/null || true
 chmod 600 "$AK" 2>/dev/null || true
-echo "miao 0.10.0 postinst $(date)" > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
+
+# Il tweak e l'app scrivono qui: se la cartella non esiste il report resta vuoto
+mkdir -p /var/mobile/Documents 2>/dev/null || true
+touch /var/mobile/Documents/miao-events.jsonl 2>/dev/null || true
+chown 501:501 /var/mobile/Documents/miao-events.jsonl 2>/dev/null || true
+chmod 666 /var/mobile/Documents/miao-events.jsonl 2>/dev/null || true
+
+# L'icona del pannello compare solo dopo che SpringBoard ha riletto le app
+APP="/var/jb/Applications/MiaoPanel.app"
+[ -d "$APP" ] || APP="/Applications/MiaoPanel.app"
+if command -v uicache >/dev/null 2>&1; then
+  uicache -p "$APP" 2>/dev/null || uicache -a 2>/dev/null || true
+fi
+
 {
-  echo "miao 0.10.0 postinst $(date)"
+  echo "miao 0.11.0 postinst $(date)"
   ls -la /var/jb/Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || ls -la /Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || true
+  ls -ld "$APP" 2>/dev/null || true
 } > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
-echo "Miao 0.10.0 — Userspace Reboot"
+echo "Miao 0.11.0 — Userspace Reboot, poi apri l'app Miao"
 exit 0
