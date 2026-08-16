@@ -2890,7 +2890,8 @@ static void MiaoRunPickAndTap(void) {
 		MiaoStepResult(@"scroll", YES,
 			[NSString stringWithFormat:@"mood=%ld passes=%ld", (long)gMood, (long)passes]);
 		MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{
-			void (^tapCard)(NSInteger) = ^(NSInteger which) {
+			__block void (^tapCard)(NSInteger) = nil;
+			tapCard = ^(NSInteger which) {
 				MiaoToast(@"Click video");
 				BOOL tapped = MiaoTapPt(MiaoPtThumb(which), @"video-1");
 				MiaoStepResult(@"tap-video", tapped,
