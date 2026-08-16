@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.13.1
+Version: 0.14.0
 Architecture: iphoneos-arm64
-Description: Curioso taps the visible card; no overscroll past the thumb.
+Description: ~2 min fullscreen watch; no pause-tap; no post-run scroll.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
