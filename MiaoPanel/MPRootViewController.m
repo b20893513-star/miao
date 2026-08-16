@@ -98,7 +98,7 @@ static void MPSend(NSString *line, const char *note) {
 	UIButton *b1 = [self personaButton:@"Casual" mood:@"casual"];
 	UIButton *b2 = [self personaButton:@"Mirato" mood:@"focused"];
 	UIButton *b3 = [self personaButton:@"Click ads" mood:@"clickall"];
-	UIButton *b4 = [self personaButton:@"Video lungo" mood:@"videolong"];
+	UIButton *b4 = [self personaButton:@"Sessione lunga" mood:@"videolong"];
 
 	UIStackView *row1 = [[UIStackView alloc] initWithArrangedSubviews:@[ b0, b1, b2 ]];
 	row1.axis = UILayoutConstraintAxisHorizontal;

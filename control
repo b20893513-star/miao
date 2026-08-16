@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.12.1
+Version: 0.13.0
 Architecture: iphoneos-arm64
-Description: Content video vs preroll; ads linger without auto-CTA; reuse Safari tab; skip respected.
+Description: Manual zones (skip/play/fs) on 11 Pro Max; no window.close; 2-video long sessions.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
