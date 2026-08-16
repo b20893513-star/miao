@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.7
+Version: 0.14.8
 Architecture: iphoneos-arm64
-Description: Mood via run cmd; robust Schede/X close with API fallback.
+Description: No back/openURL on ads; only Schede then Nox tab.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

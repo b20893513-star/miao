@@ -2172,100 +2172,62 @@ static void MiaoRecoverFromOverview(void (^done)(BOOL ok)) {
 }
 
 /**
- Dopo Schede: aspetta che la griglia sia davvero aperta. Se InTabOverview
- resta falso (AX/lingue), forza comunque un giro di X + tap card: nei log
- 0.14.6 chiudeva 0 X perche' usciva subito con overview=0.
+ Dopo Schede: aspetta overview / Fine / card sito. Niente X a casaccio
+ sulla pagina ad (rompe tutto). Niente Indietro / openURL qui.
  */
 static void MiaoWaitOverviewThen(NSInteger tries, void (^then)(BOOL inGrid)) {
-	if (MiaoInTabOverview()) {
+	if (MiaoInTabOverview() || MiaoAXFind(MiaoNamesDone()) || MiaoSiteCard()) {
 		if (then) then(YES);
 		return;
 	}
-	if (tries >= 8) {
-		MiaoLog([NSString stringWithFormat:@"griglia: overview non rilevata\n%@", MiaoAXDump()]);
+	if (tries >= 10) {
+		MiaoLog([NSString stringWithFormat:@"griglia: non aperta\n%@", MiaoAXDump()]);
 		if (then) then(NO);
 		return;
 	}
-	MiaoAfter(0.35, ^{ MiaoWaitOverviewThen(tries + 1, then); });
-}
-
-/// Ultima carta: API private + SelectSiteTab. Su iOS 16 a volte funzionano.
-static BOOL MiaoForceSiteFrontAPI(void) {
-	NSInteger closed = MiaoCloseNonNoxTabs();
-	BOOL sel = MiaoSelectSiteTab();
-	MiaoLog([NSString stringWithFormat:@"force API close=%ld select=%d front=%d",
-		(long)closed, sel, MiaoSiteIsFront()]);
-	return MiaoSiteIsFront() && !MiaoInTabOverview();
+	MiaoAfter(0.28, ^{ MiaoWaitOverviewThen(tries + 1, then); });
 }
 
 /**
- Chiude le schede ads come a mano: quadrato → X su TUTTE le estranee →
- tap sulla scheda NoxReel. Niente openURL.
+ Chiude/lascia le ads come a mano:
+ 1) Schede  2) X sulle estranee (best effort)  3) tap scheda NoxReel
+ Vietato: Indietro, openURL (riaprono Nox → cascata popup).
  */
 static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
-	void (^finishOk)(BOOL) = ^(BOOL ok) {
-		if (ok) {
-			if (done) done(YES);
-			return;
-		}
-		/* Non siamo riusciti via UI: prova API, poi dichiara esito reale. */
-		BOOL api = MiaoForceSiteFrontAPI();
-		if (done) done(api);
+	void (^finish)(BOOL) = ^(BOOL ok) {
+		MiaoLog([NSString stringWithFormat:@"close-native end ok=%d front=%d ov=%d estranee=%ld",
+			ok, MiaoSiteIsFront() ? 1 : 0, MiaoInTabOverview() ? 1 : 0,
+			(long)MiaoForeignTabCount()]);
+		if (done) done(ok);
 	};
 
-	void (^closeThenLeave)(BOOL forceX) = ^(BOOL forceX) {
-		void (^afterX)(NSInteger) = ^(NSInteger n) {
-			MiaoLog([NSString stringWithFormat:@"griglia: chiuse %ld X force=%d",
-				(long)n, forceX]);
-			MiaoAfter(MiaoBetween(0.45, 0.85), ^{
-				MiaoLeaveTabGrid(0, ^(BOOL onSite) {
-					if (onSite && MiaoSiteIsFront() && !MiaoInTabOverview()) {
-						/* Schede di fondo ok: le chiudiamo via API se restano. */
-						if (MiaoForeignTabCount() > 0) (void)MiaoCloseNonNoxTabs();
-						finishOk(YES);
-						return;
-					}
-					if (MiaoInTabOverview() && MiaoForeignTabCount() > 0) {
-						MiaoCloseAllForeignInGrid(6, 0, ^(NSInteger n2) {
-							(void)n2;
-							MiaoLeaveTabGrid(0, ^(BOOL on2) {
-								if (on2 && MiaoSiteIsFront()) {
-									if (MiaoForeignTabCount() > 0) (void)MiaoCloseNonNoxTabs();
-									finishOk(YES);
-									return;
-								}
-								MiaoReturnToSiteTab(^(BOOL ok) { finishOk(ok); });
-							});
-						});
-						return;
-					}
-					MiaoReturnToSiteTab(^(BOOL ok) { finishOk(ok); });
-				});
-			});
-		};
-
-		if (MiaoInTabOverview() || forceX) {
-			/* Anche se overview non e' "rilevata", prova comunque le X AX/geo. */
-			if (!MiaoInTabOverview() && forceX) {
-				MiaoLog(@"griglia: force X senza overview flag");
-				if (MiaoCloseOneForeignInGrid()) {
-					MiaoAfter(MiaoBetween(0.55, 0.95), ^{
-						MiaoCloseAllForeignInGrid(7, 1, afterX);
-					});
-					return;
-				}
-				afterX(0);
+	void (^leaveToSite)(void) = ^{
+		MiaoLeaveTabGrid(0, ^(BOOL onSite) {
+			if (onSite && MiaoSiteIsFront() && !MiaoInTabOverview()) {
+				finish(YES);
 				return;
 			}
-			MiaoCloseAllForeignInGrid(8, 0, afterX);
-			return;
-		}
-		afterX(0);
+			/* Solo cambio scheda via API — non openURL. */
+			if (MiaoSelectSiteTab()) {
+				MiaoAfter(1.1, ^{
+					finish(MiaoSiteIsFront() && !MiaoInTabOverview());
+				});
+				return;
+			}
+			finish(MiaoSiteIsFront() && !MiaoInTabOverview());
+		});
 	};
 
-	if (MiaoInTabOverview()) {
-		MiaoLog(@"UI nativa: gia' in panoramica, chiudo tutte le ads");
-		closeThenLeave(NO);
+	void (^inGridClose)(void) = ^{
+		MiaoCloseAllForeignInGrid(8, 0, ^(NSInteger n) {
+			MiaoLog([NSString stringWithFormat:@"griglia: chiuse %ld X", (long)n]);
+			MiaoAfter(MiaoBetween(0.4, 0.7), leaveToSite);
+		});
+	};
+
+	if (MiaoInTabOverview() || MiaoAXFind(MiaoNamesDone()) || MiaoSiteCard()) {
+		MiaoLog(@"UI nativa: gia' in panoramica");
+		inGridClose();
 		return;
 	}
 
@@ -2275,14 +2237,28 @@ static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
 	if (tabs) opened = MiaoTapNode(tabs, @"schede");
 	if (!opened) opened = MiaoTapPt(MiaoPtTabs(), @"schede-quadrato");
 	if (!opened) {
-		MiaoLog([NSString stringWithFormat:@"UI nativa: quadrato schede non toccato\n%@", MiaoAXDump()]);
-		finishOk(NO);
+		MiaoLog([NSString stringWithFormat:@"UI nativa: Schede non toccato\n%@", MiaoAXDump()]);
+		if (MiaoSelectSiteTab()) {
+			MiaoAfter(1.1, ^{ finish(MiaoSiteIsFront() && !MiaoInTabOverview()); });
+			return;
+		}
+		finish(NO);
 		return;
 	}
 
-	MiaoAfter(MiaoHumanDelay(0.9, 0.5), ^{
+	MiaoAfter(MiaoHumanDelay(0.85, 0.4), ^{
 		MiaoWaitOverviewThen(0, ^(BOOL inGrid) {
-			closeThenLeave(!inGrid);
+			if (inGrid) {
+				inGridClose();
+				return;
+			}
+			/* Schede non aperta: niente Indietro, solo API scheda sito. */
+			MiaoLog(@"Schede non in griglia → solo selectTab");
+			if (MiaoSelectSiteTab()) {
+				MiaoAfter(1.1, ^{ finish(MiaoSiteIsFront() && !MiaoInTabOverview()); });
+				return;
+			}
+			finish(NO);
 		});
 	});
 }
@@ -2333,17 +2309,14 @@ static void MiaoGoBackHuman(void (^done)(BOOL ok)) {
 }
 
 /**
- Riporta il sito in primo piano provando le vie in ordine di realismo e
- verificando dopo ogni tentativo, invece di dare per riuscito il primo.
+ Riporta il sito in primo piano. Niente Indietro / openURL mid-run:
+ Indietro e' come riaprire Nox e fa esplodere i popup.
  */
 static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 	if (!MiaoIsSafari()) {
 		if (done) done(NO);
 		return;
 	}
-	/* Prima di tutto: se siamo in Mostra pannelli, esci. Riaprire Schede qui
-	   peggiora lo stato (griglia su griglia) ed e' quello che ha lasciato il
-	   run a scrollare i pannelli. */
 	if (MiaoInTabOverview()) {
 		MiaoEnsureBrowsing(done);
 		return;
@@ -2360,49 +2333,23 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 			if (done) done(YES);
 			return;
 		}
-		MiaoGoBackHuman(^(BOOL back) {
-			(void)back;
-			MiaoAfter(0.8, ^{
-				if (MiaoInTabOverview()) {
-					MiaoEnsureBrowsing(done);
-					return;
-				}
-				if (MiaoSiteIsFront()) {
-					MiaoLog(@"front ok via back");
+		if (MiaoSelectSiteTab()) {
+			MiaoAfter(1.0, ^{
+				if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
+					MiaoLog(@"front ok via API schede");
 					if (done) done(YES);
 					return;
 				}
-				MiaoSelectSiteTab();
-				MiaoAfter(1.0, ^{
-					if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
-						MiaoLog(@"front ok via API schede");
-						if (done) done(YES);
-						return;
-					}
-					/* Ultima carta: openURL solo se non esiste scheda Nox. */
-					if (!MiaoSiteWebView()) {
-						MiaoOpenHomeIfMissing(^{
-							BOOL ok = MiaoSiteIsFront() && !MiaoInTabOverview();
-							MiaoAck([NSString stringWithFormat:@"recupero %@\n%@",
-								ok ? @"ok via openURL cold" : @"FALLITO", MiaoWebState()]);
-							if (done) done(ok);
-						});
-						return;
-					}
-					MiaoReturnToSiteTab(^(BOOL ok) {
-						MiaoAck([NSString stringWithFormat:@"recupero %@\n%@",
-							ok ? @"ok via scheda" : @"FALLITO", MiaoWebState()]);
-						if (done) done(ok);
-					});
-				});
+				MiaoReturnToSiteTab(done);
 			});
-		});
+			return;
+		}
+		MiaoReturnToSiteTab(done);
 	});
 }
 
 /**
- Chiude le pagine ads dopo l'impression.
- Ordine: Schede→X → SelectSiteTab/API → swipe Indietro. Niente openURL mid-run.
+ Chiude le ads: solo Schede → X → scheda Nox. Mai Indietro, mai openURL.
  */
 static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 	NSInteger before = MiaoForeignTabCount();
@@ -2411,40 +2358,23 @@ static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 		return;
 	}
 
-	void (^report)(BOOL) = ^(BOOL ok) {
+	MiaoCloseAdTabNative(^(BOOL nativeOk) {
+		(void)nativeOk;
+		BOOL ok = MiaoSiteIsFront() && !MiaoInTabOverview();
+		if (!ok && MiaoSelectSiteTab()) {
+			MiaoAfter(1.0, ^{
+				BOOL ok2 = MiaoSiteIsFront() && !MiaoInTabOverview();
+				MiaoAck([NSString stringWithFormat:@"ads close %ld→%ld front=%d ov=%d",
+					(long)before, (long)MiaoForeignTabCount(),
+					ok2 ? 1 : 0, MiaoInTabOverview() ? 1 : 0]);
+				if (done) done(ok2);
+			});
+			return;
+		}
 		MiaoAck([NSString stringWithFormat:@"ads close %ld→%ld front=%d ov=%d",
 			(long)before, (long)MiaoForeignTabCount(),
-			MiaoSiteIsFront() ? 1 : 0, MiaoInTabOverview() ? 1 : 0]);
-		if (done) done(ok && MiaoSiteIsFront() && !MiaoInTabOverview());
-	};
-
-	MiaoCloseAdTabNative(^(BOOL nativeOk) {
-		if (nativeOk && MiaoSiteIsFront() && !MiaoInTabOverview()) {
-			report(YES);
-			return;
-		}
-		if (MiaoForceSiteFrontAPI()) {
-			report(YES);
-			return;
-		}
-		MiaoReturnToSiteTab(^(BOOL ok) {
-			if (ok && MiaoSiteIsFront() && !MiaoInTabOverview()) {
-				report(YES);
-				return;
-			}
-			/* Ultima carta umana: Indietro dalla landing ad (stessa scheda). */
-			MiaoGoBackHuman(^(BOOL back) {
-				(void)back;
-				MiaoAfter(0.6, ^{
-					if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
-						report(YES);
-						return;
-					}
-					(void)MiaoForceSiteFrontAPI();
-					report(MiaoSiteIsFront() && !MiaoInTabOverview());
-				});
-			});
-		});
+			ok ? 1 : 0, MiaoInTabOverview() ? 1 : 0]);
+		if (done) done(ok);
 	});
 }
 
@@ -2860,8 +2790,8 @@ static void MiaoRunEnd(NSString *msg, BOOL ok) {
 }
 
 /**
- Se Schede/pannelli falliscono: rientra sulla scheda Nox gia' aperta e ritenta
- il video. openURL home e' vietato a meta' run (nuovi popup in loop).
+ Se Schede/pannelli falliscono: rientra sulla scheda Nox gia' aperta.
+ Mai openURL mid-run (nuovi popup). Mai Indietro.
  */
 static void MiaoRunContinueToVideo(NSString *why) {
 	MiaoLog([NSString stringWithFormat:@"rescue %ld %@", (long)gRunRescueTries, why ?: @""]);
@@ -2877,27 +2807,39 @@ static void MiaoRunContinueToVideo(NSString *why) {
 		return;
 	}
 	MiaoToast(@"Rientro scheda…");
-	MiaoOpenHomeIfMissing(^{
 	MiaoReturnToSiteTab(^(BOOL ok) {
 		(void)ok;
 		gRunTapTries = 0;
 		MiaoAfter(MiaoHumanDelay(0.8, 0.6), ^{
+			if (!MiaoSiteIsFront() || MiaoInTabOverview()) {
+				MiaoCloseAdTabNative(^(BOOL front) {
+					(void)front;
+					if (MiaoFrontIsVideo() && !MiaoForeignFront())
+						MiaoRunWaitSkip();
+					else if (MiaoSiteIsFront() && !MiaoInTabOverview())
+						MiaoRunPickAndTap();
+					else
+						MiaoRunEnd(@"non torno sulla scheda sito", NO);
+				});
+				return;
+			}
 			if (MiaoForeignFront() || MiaoForeignTabCount() > 0) {
 				MiaoCloseAdsHuman(^(BOOL front) {
 					(void)front;
 					if (MiaoFrontIsVideo() && !MiaoForeignFront())
 						MiaoRunWaitSkip();
-					else
+					else if (MiaoSiteIsFront())
 						MiaoRunPickAndTap();
+					else
+						MiaoRunEnd(@"ads ancora davanti", NO);
 				});
 				return;
 			}
-			if (MiaoFrontIsVideo() && !MiaoForeignFront())
+			if (MiaoFrontIsVideo())
 				MiaoRunWaitSkip();
 			else
 				MiaoRunPickAndTap();
 		});
-	});
 	});
 }
 
@@ -3376,7 +3318,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.7 mood-via-run");
+	MiaoLog(@"safari ready 0.14.8 no-back-ads");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3530,7 +3472,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.7 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.8 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3631,7 +3573,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.7 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.8 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
