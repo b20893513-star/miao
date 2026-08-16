@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.9
+Version: 0.14.10
 Architecture: iphoneos-arm64
-Description: Never tap ad card in Schede grid; only Nox/Fine.
+Description: Restore 0.14.6 Schede/X close; keep mood on run cmd.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
