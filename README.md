@@ -1,67 +1,58 @@
-# Miao 0.9.3
+# Miao 0.9.4
 
-## Il bug del `NO TOUCH` dopo il popunder
-Il tap UIKit funziona, ma dopo l'apertura della scheda ads lavoravamo su **due
-contesti diversi**:
+## Un passaggio solo (`run`)
+Niente piu' loop: la sessione fa un giro lineare, e ogni passo verifica il
+proprio effetto prima del successivo.
 
-- le coordinate e la sonda JS venivano dalla webview del sito, che dopo il
-  popunder e' in secondo piano
-- il tap viene consegnato con un hit-test sulla finestra **visibile**, che in
-  quel momento mostra la pagina dell'annuncio
+1. sito in primo piano e sulla home
+2. scroll umano di 180-440 px
+3. tap su una thumb casuale — **questo primo tap se lo prende il popunder**
+4. la pagina ads viene chiusa con `window.close()` e si torna al sito
+5. ri-tap sulla **stessa** thumb: adesso si entra nel video
+6. attesa che lo skip si sblocchi, poi tap sullo skip
 
-Quindi il touch atterrava, ma sulla pagina dell'ad, e il listener che lo
-aspettava stava sull'altra pagina. Da qui `CAL NO TOUCH` e il loop fermo.
+Il doppio tap non e' una ripetizione difensiva: e' il comportamento reale del
+popunder, che consuma il primo click. Il target resta memorizzato in
+`__miaoTarget`, quindi il secondo tap va sullo stesso video.
 
-## L'invariante
+## Attesa dello skip
+Lo skip viene cercato nel documento e dentro gli iframe (il preroll VAST sta in
+`/x/pr`), e considerato pronto solo se non e' `disabled`, non ha
+`pointer-events: none`, non e' semi-trasparente e **non contiene cifre**: un
+countdown ancora in corso mostra un numero, tipo "Salta tra 5".
+
+Si controlla ogni secondo circa. Dopo 25 tentativi si tappa comunque quello che
+c'e', dopo 40 si esce con `skip mai sbloccato`, cosi' non resta appeso.
+
+## Invariante sul tap
 Non si tappa se la pagina da cui leggiamo le coordinate non e' anche quella in
-primo piano. Meglio non tappare che tappare a caso: in quel caso arriva
-`Tap NO: ad davanti` e il log riporta lo stato completo delle webview.
+primo piano: dopo un popunder il touch atterrerebbe sull'annuncio. In quel caso
+esce `Tap NO: ad davanti` e nel log finisce lo stato completo delle webview.
 
-Prima si sistema lo stato, si **verifica**, e solo dopo si tappa. La verifica e'
-la parte che mancava: prima ogni passo era a fiducia.
+## Recupero della scheda
+`MiaoEnsureSiteFront` prova in ordine e verifica dopo ogni tentativo:
 
-## Recupero della scheda giusta
-`MiaoEnsureSiteFront` prova tre vie in ordine e controlla il risultato dopo
-ognuna, invece di dare per riuscita la prima:
-
-1. `window.close()` dentro la webview dell'ad. Funziona senza API private,
-   perche' quella pagina e' stata aperta da uno script
-2. le API private delle schede (`setActiveTabDocument:` e simili), che su iOS 16
-   possono non rispondere
-3. riapertura della home, che porta il sito davanti in ogni caso
-
-## Contare gli ads senza API private
-`MiaoAdTabCount` contava le schede tramite API private che possono tornare una
-lista vuota, quindi non rilevava nulla. Ora conta le **webview**, che sono
-sempre visibili nella gerarchia insieme al loro URL.
-
-## Comando `state`
-Scrive nel log lo stato reale: quante webview, l'URL di ognuna, quale e' visibile,
-quale e' in primo piano e se e' quella del sito. E' la prima cosa da guardare
-quando qualcosa non torna.
-
-## Tap umano
-- thumb casuale a ogni giro, punto casuale nella zona centrale del rect
-- contatto 55-130 ms con due micro-movimenti di 1-2 px
-- fasi `Began` -> `Moved` -> `Moved` -> `Ended` su giri di runloop distinti
-- pause fra le azioni sempre randomizzate
+1. `window.close()` nella webview dell'ad, senza API private, perche' quella
+   pagina l'ha aperta uno script
+2. le API private delle schede, che su iOS 16 possono non rispondere
+3. riapertura della home
 
 ## Comandi
 | comando | effetto |
 |---|---|
-| `adloop` | il loop completo, `LoopTaps` volte |
-| `state` | dump dello stato webview |
+| `run` | il passaggio completo |
+| `state` | dump webview: URL, visibilita', primo piano |
 | `backsite` | recupera la scheda del sito |
 | `calib` | misura dove atterra il touch |
-| `clickvideo` | un singolo click su thumb |
+| `adloop` | vecchio loop a `LoopTaps` click, fuori dal flusso normale |
 
-## Toast
-- `Loop 3` -> giri rimanenti
-- `UIK x,y` -> tap inviato
-- `Ads +1` -> pagina ads rilevata, la chiudo
-- `Tap NO: ad davanti` -> tap bloccato dall'invariante
-- `CAL ok d=dx,dy tr1` -> il touch arriva, `tr1` = `isTrusted`
-- `WK 3 front=sito` -> risposta di `state`
+## Toast in sequenza
+`Run...` -> `Scroll...` -> `Click video` -> `Ads +1, chiudo` ->
+`Ri-click video (1)` -> `Sul video` -> `Attendo skip (5)` -> `Skip!` ->
+`Run OK skip fatto, playing|/video/...`
+
+Se qualcosa si ferma: `Run stop: <motivo>` dice a che passo, e
+`/var/mobile/Documents/miao-ack.txt` ha il dettaglio.
 
 ## Install
 Userspace Reboot dopo update.

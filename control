@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.9.3
+Version: 0.9.4
 Architecture: iphoneos-arm64
-Description: Never tap unless the site page is actually front; verified recovery.
+Description: Single linear run: scroll, click, close ad tab, re-click, skip.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
