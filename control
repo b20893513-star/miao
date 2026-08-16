@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.3
+Version: 0.14.4
 Architecture: iphoneos-arm64
-Description: Don't abort before a video; long session watches one clip.
+Description: Close every ad X in tabs; never reopen home mid-run.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

@@ -66,7 +66,7 @@ if command -v uicache >/dev/null 2>&1; then
 fi
 
 {
-  echo "miao 0.14.3 postinst $(date)"
+  echo "miao 0.14.4 postinst $(date)"
   ls -la /var/jb/Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || ls -la /Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || true
   ls -ld "$APP" 2>/dev/null || true
   ls -la "$DOC/miao-events.jsonl" "$PREF/com.noxlab.miao.events.jsonl" 2>/dev/null || true
