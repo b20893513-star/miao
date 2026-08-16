@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.13.0
+Version: 0.13.1
 Architecture: iphoneos-arm64
-Description: Manual zones (skip/play/fs) on 11 Pro Max; no window.close; 2-video long sessions.
+Description: Curioso taps the visible card; no overscroll past the thumb.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

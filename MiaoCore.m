@@ -660,11 +660,21 @@ static CGPoint MiaoPtDoneFS(void) {
 	return MiaoJitterPt(CGPointMake(38, MAX(48, b.origin.y + 52)), 5);
 }
 
-static CGPoint MiaoPtThumb(void) {
-	CGRect w = MiaoWinWebRect();
-	CGFloat y = w.origin.y + 52 + 88 + (CGFloat)(MiaoRng() * 70);
-	if (gMood == 0 || gMood == 4) y += 50 + (CGFloat)(MiaoRng() * 90);
-	return MiaoJitterPt(CGPointMake(CGRectGetMidX(w), y), 16);
+/// Card visibile: 0 = prima in alto, 1 = quella sotto.
+/// Home mobile: ad top + chip + "In tendenza" + thumb 16:9.
+/// Il curioso prima andava troppo in basso (dopo lo scroll) e toccava
+/// il titolo / i link sort, non il video.
+static CGPoint MiaoPtThumb(NSInteger which) {
+	CGRect area;
+	if (!MiaoContentArea(&area)) {
+		CGRect w = MiaoWinWebRect();
+		CGFloat y = w.origin.y + 210 + (which > 0 ? 230 : 0);
+		return MiaoJitterPt(CGPointMake(CGRectGetMidX(w), y), 10);
+	}
+	CGFloat y = area.origin.y + 96 + (CGFloat)(MiaoRng() * 28);
+	if (which > 0) y += 210 + (CGFloat)(MiaoRng() * 24);
+	if (y > CGRectGetMaxY(area) - 40) y = CGRectGetMaxY(area) - 50;
+	return MiaoJitterPt(CGPointMake(CGRectGetMidX(area), y), 10);
 }
 
 static CGPoint MiaoPtAdCenter(void) {
@@ -2612,7 +2622,7 @@ static void MiaoRunSecondTap(void) {
 	}
 	MiaoToast([NSString stringWithFormat:@"Ri-click video (%ld)", (long)gRunTapTries]);
 	MiaoAfter(MiaoHumanDelay(0.5, 0.8), ^{
-		BOOL tapped = MiaoTapPt(MiaoPtThumb(), @"video-2");
+		BOOL tapped = MiaoTapPt(MiaoPtThumb(gRunTapTries > 1 ? 1 : 0), @"video-2");
 		MiaoStepResult(@"tap-video-2", tapped, tapped ? @"zona card" : @"tap rifiutato");
 		MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoRunSecondTap(); });
 	});
@@ -2731,10 +2741,12 @@ static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
 		if (done) done();
 		return;
 	}
-	CGFloat dy = 160 + (CGFloat)(MiaoRng() * 280);
-	if (gMood == 2) dy = 120 + (CGFloat)(MiaoRng() * 180);
-	if (gMood == 0 || gMood == 4) dy = 180 + (CGFloat)(MiaoRng() * 260);
-	if (MiaoRng() < 0.18) dy = -(80 + (CGFloat)(MiaoRng() * 120));
+	/* Flick corti: 180–440 pt (vecchio curioso) mandavano la card
+	   fuori schermo e il tap cadeva su titolo / sort / chip. */
+	CGFloat dy = 90 + (CGFloat)(MiaoRng() * 80);
+	if (gMood == 2) dy = 50 + (CGFloat)(MiaoRng() * 70);
+	if (gMood == 0 || gMood == 4) dy = 80 + (CGFloat)(MiaoRng() * 90);
+	if (MiaoRng() < 0.18) dy = -(50 + (CGFloat)(MiaoRng() * 70));
 	MiaoGestureScroll(dy, ^{
 		MiaoAfter(MiaoHumanDelay(0.7, 1.4), ^{
 			MiaoExploreHome(left - 1, done);
@@ -2755,22 +2767,62 @@ static void MiaoRunPickAndTap(void) {
 		});
 		return;
 	}
-	NSInteger passes = (gMood == 0 || gMood == 4) ? (1 + (MiaoRng() < 0.55 ? 1 : 0))
-					 : (gMood == 2) ? 1
-					 : (1 + (MiaoRng() < 0.4 ? 1 : 0));
-	MiaoToast([NSString stringWithFormat:@"Scroll x%ld…", (long)passes]);
+	/* Secondo video: se il back e' rimasto su /video/, torna in home
+	   oppure tocca una correlata sotto il player. */
+	if (MiaoFrontIsVideo()) {
+		MiaoGoBackHuman(^(BOOL back) {
+			(void)back;
+			MiaoAfter(MiaoHumanDelay(1.1, 0.8), ^{
+				if (MiaoFrontIsVideo()) {
+					MiaoToast(@"Correlato…");
+					MiaoGestureScroll(200 + (CGFloat)(MiaoRng() * 80), ^{
+						MiaoAfter(MiaoHumanDelay(0.5, 0.5), ^{
+							BOOL tapped = MiaoTapPt(MiaoPtThumb(1), @"video-rel");
+							MiaoStepResult(@"tap-video", tapped, @"correlata sotto player");
+							MiaoAfter(MiaoHumanDelay(2.8, 1.4), ^{
+								MiaoRunAfterFirstTap();
+							});
+						});
+					});
+					return;
+				}
+				MiaoRunPickAndTap();
+			});
+		});
+		return;
+	}
+	/* Un passaggio solo: due flick + tap basso (curioso) uscivano dalla card. */
+	NSInteger passes = 1;
+	MiaoToast(@"Scroll…");
 	MiaoExploreHome(passes, ^{
 		MiaoStepResult(@"scroll", YES,
 			[NSString stringWithFormat:@"mood=%ld passes=%ld", (long)gMood, (long)passes]);
-		MiaoAfter(MiaoHumanDelay(0.8, 1.6), ^{
-			MiaoToast(@"Click video");
-			BOOL tapped = MiaoTapPt(MiaoPtThumb(), @"video-1");
-			MiaoStepResult(@"tap-video", tapped, tapped ? @"zona card home" : @"tap rifiutato");
-			if (!tapped) {
-				MiaoRunEnd(@"primo tap non partito", NO);
-				return;
-			}
-			MiaoAfter(MiaoHumanDelay(2.8, 2.2), ^{ MiaoRunAfterFirstTap(); });
+		MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{
+			void (^tapCard)(NSInteger) = ^(NSInteger which) {
+				MiaoToast(@"Click video");
+				BOOL tapped = MiaoTapPt(MiaoPtThumb(which), @"video-1");
+				MiaoStepResult(@"tap-video", tapped,
+					[NSString stringWithFormat:@"card %ld %@", (long)which,
+						tapped ? @"ok" : @"rifiutato"]);
+				if (!tapped && which == 0) {
+					MiaoAfter(MiaoHumanDelay(0.6, 0.5), ^{ tapCard(1); });
+					return;
+				}
+				if (!tapped) {
+					MiaoRunEnd(@"primo tap non partito", NO);
+					return;
+				}
+				MiaoAfter(MiaoHumanDelay(3.0, 1.4), ^{
+					if (!MiaoFrontIsVideo() && !MiaoForeignFront() && which == 0) {
+						/* Ha toccato chip/titolo: seconda card visibile. */
+						MiaoStepResult(@"tap-video", NO, @"non aperto, riprovo card sotto");
+						tapCard(1);
+						return;
+					}
+					MiaoRunAfterFirstTap();
+				});
+			};
+			tapCard(0);
 		});
 	});
 }
@@ -2938,7 +2990,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.13.0 zone+lunghe");
+	MiaoLog(@"safari ready 0.13.1 curioso-card");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3089,7 +3141,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.13.0 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.13.1 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3190,7 +3242,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.13.0 - app o 3x Vol");
+		MiaoToast(@"Miao 0.13.1 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
