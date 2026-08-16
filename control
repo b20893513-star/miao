@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.2
+Version: 0.14.3
 Architecture: iphoneos-arm64
-Description: Close ads like Safari: tabs square, X, tap site card.
+Description: Don't abort before a video; long session watches one clip.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

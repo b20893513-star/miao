@@ -2438,11 +2438,13 @@ static NSInteger gRunThumb = -1;
 static NSInteger gRunVideosLeft = 1;
 static BOOL gRunDidFS = NO;
 static BOOL gRunSecondVideo = NO;
+static NSInteger gRunRescueTries = 0;
 
 static void MiaoRunPickAndTap(void);
 static void MiaoRunAfterFirstTap(void);
 static void MiaoRunSecondTap(void);
 static void MiaoRunWaitSkip(void);
+static void MiaoRunContinueToVideo(NSString *why);
 static void MiaoRunEnd(NSString *msg, BOOL ok);
 static void MiaoRunWatchThenEnd(NSString *msg);
 static void MiaoRunNextOrEnd(NSString *msg);
@@ -2700,6 +2702,57 @@ static void MiaoRunEnd(NSString *msg, BOOL ok) {
 }
 
 /**
+ Se Schede/pannelli falliscono non si abortisce: si torna al sito e si
+ apre un video. Una sessione lunga che muore prima della visione e' inutile.
+ */
+static void MiaoRunContinueToVideo(NSString *why) {
+	MiaoLog([NSString stringWithFormat:@"rescue %ld %@", (long)gRunRescueTries, why ?: @""]);
+	MiaoStepResult(@"recupero", YES, why ?: @"");
+	if (gRunRescueTries++ >= 3) {
+		MiaoRunEnd(why.length ? why : @"recupero esaurito", NO);
+		return;
+	}
+	if (MiaoFrontIsVideo() && !MiaoInTabOverview() && !MiaoForeignFront()) {
+		gRunTapTries = 0;
+		MiaoToast(@"Sul video");
+		MiaoAfter(MiaoHumanDelay(0.8, 0.5), ^{ MiaoRunWaitSkip(); });
+		return;
+	}
+	if (MiaoInTabOverview()) {
+		MiaoToast(@"Esco dai pannelli");
+		MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
+		if (fine) MiaoTapNode(fine, @"fine-rescue");
+		else {
+			MiaoAXNode *card = MiaoSiteCard();
+			if (card) MiaoTapNode(card, @"scheda-rescue");
+		}
+		MiaoAfter(1.5, ^{ MiaoRunContinueToVideo(@"dopo Fine"); });
+		return;
+	}
+	MiaoToast(@"Riapro sito");
+	MiaoOpenURL(MiaoHomeURL());
+	MiaoAfter(3.4, ^{
+		if (MiaoInTabOverview()) {
+			MiaoAXNode *f2 = MiaoAXFind(MiaoNamesDone());
+			if (f2) MiaoTapNode(f2, @"fine-rescue-2");
+			MiaoAfter(1.2, ^{
+				gRunTapTries = 0;
+				if (MiaoFrontIsVideo() && !MiaoForeignFront())
+					MiaoRunWaitSkip();
+				else
+					MiaoRunPickAndTap();
+			});
+			return;
+		}
+		gRunTapTries = 0;
+		if (MiaoFrontIsVideo() && !MiaoForeignFront())
+			MiaoRunWaitSkip();
+		else
+			MiaoRunPickAndTap();
+	});
+}
+
+/**
  6) aspetta il countdown VAST (>=10s sul sito) e tocca Skip in basso a destra
  del player. Poi play al centro. Niente scan DOM.
  */
@@ -2708,7 +2761,7 @@ static void MiaoRunWaitSkip(void) {
 		MiaoStepResult(@"skip-attesa", NO, @"pagina esterna davanti, recupero");
 		MiaoCloseAdsHuman(^(BOOL front) {
 			if (!front) {
-				MiaoRunEnd(@"pagina esterna davanti, sito non recuperato", NO);
+				MiaoRunContinueToVideo(@"pagina esterna davanti, sito non recuperato");
 				return;
 			}
 			MiaoAfter(MiaoHumanDelay(0.8, 0.6), ^{ MiaoRunWaitSkip(); });
@@ -2738,7 +2791,7 @@ static void MiaoRunSecondTap(void) {
 		MiaoEnsureBrowsing(^(BOOL ok) {
 			if (!ok) {
 				MiaoStepResult(@"ritorno-sito", NO, @"overview non recuperata");
-				MiaoRunEnd(@"bloccato in Mostra pannelli", NO);
+				MiaoRunContinueToVideo(@"bloccato in Mostra pannelli");
 				return;
 			}
 			MiaoAfter(MiaoHumanDelay(0.6, 0.5), ^{ MiaoRunSecondTap(); });
@@ -2757,7 +2810,7 @@ static void MiaoRunSecondTap(void) {
 				if (!ok || MiaoInTabOverview()) {
 					MiaoEnsureBrowsing(^(BOOL browsing) {
 						if (!browsing) {
-							MiaoRunEnd(@"pagina esterna davanti, sito non recuperato", NO);
+							MiaoRunContinueToVideo(@"pagina esterna davanti, sito non recuperato");
 							return;
 						}
 						MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
@@ -2780,7 +2833,7 @@ static void MiaoRunSecondTap(void) {
 	}
 	if (gRunTapTries++ > 2) {
 		MiaoStepResult(@"pagina-video", NO, MiaoWebViewURL(MiaoFrontWebView()));
-		MiaoRunEnd(@"il video non si apre", NO);
+		MiaoRunContinueToVideo(@"il video non si apre");
 		return;
 	}
 	MiaoToast([NSString stringWithFormat:@"Ri-click video (%ld)", (long)gRunTapTries]);
@@ -2864,7 +2917,7 @@ static void MiaoRunAfterFirstTap(void) {
 		MiaoStepResult(@"popunder", YES, @"nessuno (frequency cap)");
 		MiaoRecoverFromOverview(^(BOOL ok) {
 			if (!ok) {
-				MiaoRunEnd(@"dopo tap: non sulla pagina", NO);
+				MiaoRunContinueToVideo(@"dopo tap: non sulla pagina");
 				return;
 			}
 			MiaoRunSecondTap();
@@ -2885,7 +2938,7 @@ static void MiaoRunAfterFirstTap(void) {
 						(long)MiaoForeignTabCount(),
 						MiaoInTabOverview() ? 1 : 0, front ? 1 : 0]);
 				if (!ok) {
-					MiaoRunEnd(@"non torno sulla pagina (pannelli?)", NO);
+					MiaoRunContinueToVideo(@"non torno sulla pagina (pannelli?)");
 					return;
 				}
 				/* dopo la chiusura ci si riprende: non si ritappa subito */
@@ -2928,7 +2981,7 @@ static void MiaoRunTapHomeCard(NSInteger which) {
 		return;
 	}
 	if (!tapped) {
-		MiaoRunEnd(@"primo tap non partito", NO);
+		MiaoRunContinueToVideo(@"primo tap non partito");
 		return;
 	}
 	MiaoAfter(MiaoHumanDelay(3.0, 1.4), ^{
@@ -2947,7 +3000,7 @@ static void MiaoRunPickAndTap(void) {
 		MiaoRecoverFromOverview(^(BOOL ok) {
 			if (!ok) {
 				MiaoStepResult(@"scroll", NO, @"non sulla pagina (pannelli)");
-				MiaoRunEnd(@"non sulla pagina prima dello scroll", NO);
+				MiaoRunContinueToVideo(@"non sulla pagina prima dello scroll");
 				return;
 			}
 			MiaoAfter(0.5, ^{ MiaoRunPickAndTap(); });
@@ -3030,10 +3083,12 @@ static void MiaoActRun(void) {
 	gRunThumb = -1;
 	gRunDidFS = NO;
 	gRunSecondVideo = NO;
+	gRunRescueTries = 0;
 	MiaoToast(@"Run...");
 	MiaoReportBegin(@"run", 0);
 	MiaoPersonaBegin();
-	gRunVideosLeft = (gMood == 2) ? 1 : 2;
+	/* Lunga: un video da ~2 min. Due partenze = due volte il rischio pannelli. */
+	gRunVideosLeft = (gMood == 2 || gMood == 4) ? 1 : 2;
 	if (MiaoReportLastWriteError().length) {
 		MiaoLog([NSString stringWithFormat:@"report write ERR %@", MiaoReportLastWriteError()]);
 		MiaoToast(@"Report: scrittura fallita");
@@ -3044,7 +3099,7 @@ static void MiaoActRun(void) {
 	MiaoEnsureSiteFront(^(BOOL front) {
 		MiaoStepResult(@"sito-davanti", front, MiaoWebViewURL(MiaoFrontWebView()));
 		if (!front) {
-			MiaoRunEnd(@"sito non in primo piano", NO);
+			MiaoRunContinueToVideo(@"sito non in primo piano");
 			return;
 		}
 		MiaoRememberSiteTitle();
@@ -3056,7 +3111,7 @@ static void MiaoActRun(void) {
 			MiaoWaitReady(0, ^(BOOL ready) {
 				MiaoStepResult(@"home-pronta", ready, ready ? MiaoWebViewURL(MiaoFrontWebView()) : @"sito non davanti");
 				if (!ready) {
-					MiaoRunEnd(@"home non pronta", NO);
+					MiaoRunContinueToVideo(@"home non pronta");
 					return;
 				}
 				MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunPickAndTap(); });
@@ -3064,12 +3119,13 @@ static void MiaoActRun(void) {
 		};
 
 		NSString *u = MiaoWebViewURL(MiaoFrontWebView());
+		if (MiaoFrontIsVideo() && !MiaoInTabOverview()) {
+			MiaoStepResult(@"gia-video", YES, u ?: @"");
+			MiaoAfter(MiaoHumanDelay(1.0, 0.6), ^{ MiaoRunWaitSkip(); });
+			return;
+		}
 		if (MiaoFrontIsVideo()) {
-			MiaoGoBackHuman(^(BOOL back) {
-				MiaoStepResult(@"indietro", back, back ? @"" : @"fallback openURL");
-				if (!back) MiaoOpenURL(MiaoHomeURL());
-				MiaoAfter(MiaoHumanDelay(1.4, 1.0), start);
-			});
+			MiaoRunContinueToVideo(@"video sotto i pannelli");
 			return;
 		}
 		if (!u.length || !MiaoIsSiteURL(u)) {
@@ -3155,7 +3211,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.2 schede");
+	MiaoLog(@"safari ready 0.14.3 rescue-video");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3304,7 +3360,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.2 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.3 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3405,7 +3461,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.2 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.3 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
