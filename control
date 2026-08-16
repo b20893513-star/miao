@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.8
+Version: 0.14.9
 Architecture: iphoneos-arm64
-Description: No back/openURL on ads; only Schede then Nox tab.
+Description: Never tap ad card in Schede grid; only Nox/Fine.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
