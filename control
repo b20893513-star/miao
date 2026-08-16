@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.12.0
+Version: 0.12.1
 Architecture: iphoneos-arm64
-Description: Persona buttons (curious/casual/focused/clickall/videolong); watch+scrub after play; seeded touches.
+Description: Content video vs preroll; ads linger without auto-CTA; reuse Safari tab; skip respected.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
