@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.10
+Version: 0.14.11
 Architecture: iphoneos-arm64
-Description: Restore 0.14.6 Schede/X close; keep mood on run cmd.
+Description: Schede then tap Nox only; watch existing video, no home re-tap.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
