@@ -430,6 +430,22 @@ static BOOL MiaoSiteIsFront(void) {
 	return front && MiaoIsSiteURL(MiaoWebViewURL(front));
 }
 
+/**
+ Apre noxreel SOLO se non c'e' gia' una scheda del sito.
+ Mid-run openURL = nuova tab + nuovi pop: vietato se SiteWebView esiste.
+ */
+static void MiaoOpenHomeIfMissing(void (^done)(void)) {
+	if (MiaoSiteWebView() != nil) {
+		MiaoLog(@"home: scheda sito gia' presente, niente openURL");
+		if (done) done();
+		return;
+	}
+	MiaoToast(@"Apro NoxReel");
+	MiaoLog(@"home: nessuna scheda sito → openURL");
+	MiaoOpenURL(MiaoHomeURL());
+	MiaoAfter(3.6, ^{ if (done) done(); });
+}
+
 static id MiaoBestWebView(void) {
 	id pick = MiaoSiteWebView() ?: MiaoFrontWebView();
 	if (!pick) pick = MiaoAllWebViews().lastObject;
@@ -2284,7 +2300,16 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 						if (done) done(YES);
 						return;
 					}
-					/* Niente openURL: nuova tab = nuovi popunder. Solo scheda esistente. */
+					/* Ultima carta: openURL solo se non esiste scheda Nox. */
+					if (!MiaoSiteWebView()) {
+						MiaoOpenHomeIfMissing(^{
+							BOOL ok = MiaoSiteIsFront() && !MiaoInTabOverview();
+							MiaoAck([NSString stringWithFormat:@"recupero %@\n%@",
+								ok ? @"ok via openURL cold" : @"FALLITO", MiaoWebState()]);
+							if (done) done(ok);
+						});
+						return;
+					}
 					MiaoReturnToSiteTab(^(BOOL ok) {
 						MiaoAck([NSString stringWithFormat:@"recupero %@\n%@",
 							ok ? @"ok via scheda" : @"FALLITO", MiaoWebState()]);
@@ -2755,6 +2780,7 @@ static void MiaoRunContinueToVideo(NSString *why) {
 		return;
 	}
 	MiaoToast(@"Rientro scheda…");
+	MiaoOpenHomeIfMissing(^{
 	MiaoReturnToSiteTab(^(BOOL ok) {
 		(void)ok;
 		gRunTapTries = 0;
@@ -2774,6 +2800,7 @@ static void MiaoRunContinueToVideo(NSString *why) {
 			else
 				MiaoRunPickAndTap();
 		});
+	});
 	});
 }
 
@@ -3121,6 +3148,8 @@ static void MiaoActRun(void) {
 		MiaoLog([NSString stringWithFormat:@"report begin sid=%@", MiaoReportSid() ?: @"?"]);
 	}
 
+	/* Cold start: senza scheda NoxReel non si apre nulla (0.14.4 aveva tolto openURL). */
+	MiaoOpenHomeIfMissing(^{
 	MiaoEnsureSiteFront(^(BOOL front) {
 		MiaoStepResult(@"sito-davanti", front, MiaoWebViewURL(MiaoFrontWebView()));
 		if (!front) {
@@ -3154,11 +3183,13 @@ static void MiaoActRun(void) {
 			return;
 		}
 		if (!u.length || !MiaoIsSiteURL(u)) {
-			MiaoOpenURL(MiaoHomeURL());
-			MiaoAfter(MiaoHumanDelay(1.5, 1.0), start);
+			MiaoOpenHomeIfMissing(^{
+				MiaoAfter(MiaoHumanDelay(0.8, 0.5), start);
+			});
 			return;
 		}
 		start();
+	});
 	});
 }
 
@@ -3236,7 +3267,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.4 chiudi-x");
+	MiaoLog(@"safari ready 0.14.5 open-home");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3385,7 +3416,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.3 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.5 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3486,7 +3517,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.3 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.5 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

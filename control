@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.4
+Version: 0.14.5
 Architecture: iphoneos-arm64
-Description: Close every ad X in tabs; never reopen home mid-run.
+Description: Open noxreel on cold start; mid-run still no reopen spam.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
