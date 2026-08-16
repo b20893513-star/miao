@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.11.1
+Version: 0.11.2
 Architecture: iphoneos-arm64
-Description: Panel can read session events (no-sandbox), dual event paths, write diagnostics.
+Description: Exit tab overview after ads; scroll only full-page webview, not tab panels.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

@@ -375,6 +375,10 @@ static BOOL MiaoForeignFront(void) {
 static void MiaoEnsureSiteFront(void (^done)(BOOL ok));
 /// Attende che la pagina davanti sia caricata e usabile (definita col flusso run).
 static void MiaoWaitReady(NSInteger tries, void (^done)(BOOL ok));
+/// TRUE se Safari e' in Mostra pannelli / panoramica schede.
+static BOOL MiaoInTabOverview(void);
+/// Esce dalla panoramica e torna alla pagina piena.
+static void MiaoEnsureBrowsing(void (^done)(BOOL ok));
 
 static CGPoint MiaoParseXY(NSString *s) {
 	if (s.length < 3) return CGPointZero;
@@ -451,13 +455,21 @@ static CGFloat MiaoNudge(CGFloat amount) {
  Zona della pagina dove e' sicuro appoggiare il dito, in coordinate finestra:
  dentro la webview ma lontano dai bordi laterali (uno swipe dal bordo e' il
  gesto "indietro") e dalle barre di Safari.
+
+ Usa SOLO la webview piena a schermo. Se prendessimo BestWebView (il sito anche
+ come miniatura nella panoramica), lo swipe muoverebbe la griglia schede:
+ e' esattamente "tiravo su e giu' i pannelli" dopo la chiusura ads.
  */
 static BOOL MiaoContentArea(CGRect *out) {
-	UIView *wk = MiaoBestWebView();
+	UIView *wk = MiaoFrontWebView();
+	if (!wk || !MiaoWKVisible(wk)) return NO;
 	UIWindow *win = wk.window;
-	if (!wk || !win) return NO;
+	if (!win) return NO;
 	CGRect fr = CGRectIntersection([wk convertRect:wk.bounds toView:win], win.bounds);
 	if (CGRectIsNull(fr) || fr.size.height < 200 || fr.size.width < 120) return NO;
+	/* scarta le miniature della panoramica anche se passano WKVisible per un pelo */
+	CGFloat winArea = win.bounds.size.width * win.bounds.size.height;
+	if (winArea > 1 && (fr.size.width * fr.size.height) / winArea < 0.55) return NO;
 	CGFloat side = MAX(30, fr.size.width * 0.09);
 	fr = CGRectMake(fr.origin.x + side, fr.origin.y + 70,
 					fr.size.width - side * 2, fr.size.height - 130);
@@ -495,6 +507,9 @@ static void MiaoWaitScrollSettle(NSInteger tries, NSInteger last, void (^done)(v
 static void MiaoGestureScroll(CGFloat dy, void (^done)(void)) {
 	CGRect area;
 	if (fabs(dy) < 10 || !MiaoContentArea(&area)) {
+		MiaoLog([NSString stringWithFormat:
+			@"scroll saltato (dy=%.0f, overview=%d, front=%@)",
+			dy, MiaoInTabOverview() ? 1 : 0, MiaoWebViewURL(MiaoFrontWebView())]);
 		if (done) done();
 		return;
 	}
@@ -1506,7 +1521,8 @@ static NSInteger MiaoForeignTabCount(void) {
 
 static NSArray<NSString *> *MiaoNamesTabs(void) {
 	return @[ @"Schede", @"Tabs", @"Mostra tutte le schede", @"Show All Tabs",
-			  @"Panoramica schede", @"Tab Overview", @"TabsButton" ];
+			  @"Panoramica schede", @"Tab Overview", @"TabsButton",
+			  @"Mostra pannelli", @"Mostra panoramica schede", @"Pannelli" ];
 }
 
 static NSArray<NSString *> *MiaoNamesClose(void) {
@@ -1518,7 +1534,27 @@ static NSArray<NSString *> *MiaoNamesBack(void) {
 }
 
 static NSArray<NSString *> *MiaoNamesDone(void) {
-	return @[ @"Fine", @"Done" ];
+	return @[ @"Fine", @"Done", @"Chiudi panoramica", @"Close Overview" ];
+}
+
+/**
+ Siamo nella panoramica schede ("Mostra pannelli"), non sulla pagina.
+
+ Segnali: nessuna webview a schermo pieno, oppure "Fine"/"Done" tipico della
+ griglia, oppure tante card grandi. Senza questo il run crede di essere sul
+ sito (l'URL del sito esiste ancora) e scrolla i pannelli.
+ */
+static BOOL MiaoInTabOverview(void) {
+	if (MiaoFrontWebView() != nil) {
+		/* webview piena: non e' overview, anche se c'e' un Fine da qualche parte */
+		return NO;
+	}
+	if (MiaoAXFind(MiaoNamesDone()) != nil) return YES;
+	NSInteger big = 0;
+	for (MiaoAXNode *n in MiaoAXNodes()) {
+		if (n.frame.size.width >= 90 && n.frame.size.height >= 110) big++;
+	}
+	return big >= 2;
 }
 
 /// Titolo della pagina del sito: nella griglia le schede si chiamano cosi'.
@@ -1562,21 +1598,87 @@ static MiaoAXNode *MiaoSiteCard(void) {
 	return best;
 }
 
-/// Esce dalla griglia toccando la nostra scheda (o "Fine" se non la troviamo).
-static void MiaoLeaveTabGrid(void (^done)(BOOL onSite)) {
+/**
+ Esce dalla griglia. Riprova: a volte la prima card non e' ancora "pronta"
+ dopo la chiusura dell'ad, e un solo tentativo lascia Safari in Mostra pannelli.
+ */
+static void MiaoLeaveTabGrid(NSInteger tries, void (^done)(BOOL onSite)) {
+	if (!MiaoInTabOverview() && MiaoSiteIsFront()) {
+		if (done) done(YES);
+		return;
+	}
+	if (tries >= 4) {
+		MiaoLog([NSString stringWithFormat:@"griglia: uscita fallita dopo %ld\n%@",
+			(long)tries, MiaoAXDump()]);
+		if (done) done(MiaoSiteIsFront() && !MiaoInTabOverview());
+		return;
+	}
+
 	MiaoAXNode *card = MiaoSiteCard();
 	if (card) {
 		MiaoTapNode(card, @"scheda sito");
 	} else {
 		MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
-		if (!fine) {
-			MiaoLog([NSString stringWithFormat:@"griglia: ne' scheda sito ne' Fine\n%@", MiaoAXDump()]);
-			if (done) done(NO);
+		if (fine) {
+			MiaoTapNode(fine, @"fine");
+		} else {
+			/* ultima carta: tocca la card piu' grande in schermo (spesso e' la nostra
+			   dopo aver chiuso l'ad: resta una sola scheda) */
+			MiaoAXNode *biggest = nil;
+			CGFloat best = 0;
+			for (MiaoAXNode *n in MiaoAXNodes()) {
+				CGFloat a = n.frame.size.width * n.frame.size.height;
+				if (n.frame.size.width < 100 || n.frame.size.height < 120) continue;
+				if (a > best) { best = a; biggest = n; }
+			}
+			if (biggest) MiaoTapNode(biggest, @"scheda unica");
+			else {
+				MiaoLog([NSString stringWithFormat:@"griglia: niente da toccare\n%@", MiaoAXDump()]);
+				if (done) done(NO);
+				return;
+			}
+		}
+	}
+
+	MiaoAfter(MiaoHumanDelay(0.9, 0.5), ^{
+		if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
+			if (done) done(YES);
 			return;
 		}
-		MiaoTapNode(fine, @"fine");
+		MiaoLeaveTabGrid(tries + 1, done);
+	});
+}
+
+/**
+ Siamo in modalita' navigazione (pagina piena), non nella griglia.
+ Se siamo in overview esce; non apre di nuovo Schede (quello peggiora lo stato).
+ Se davanti c'e' un ad, restituisce NO: il recupero ads e' compito di
+ EnsureSiteFront / CloseAdsHuman.
+ */
+static void MiaoEnsureBrowsing(void (^done)(BOOL ok)) {
+	if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
+		if (done) done(YES);
+		return;
 	}
-	MiaoAfter(MiaoHumanDelay(1.0, 0.7), ^{ if (done) done(MiaoSiteIsFront()); });
+	if (MiaoInTabOverview()) {
+		MiaoToast(@"Esco dai pannelli");
+		MiaoLeaveTabGrid(0, ^(BOOL onSite) {
+			if (onSite) {
+				if (done) done(YES);
+				return;
+			}
+			/* griglia bloccata: riapri la home, Safari esce dalla panoramica */
+			MiaoOpenURL(MiaoHomeURL());
+			MiaoAfter(2.8, ^{
+				BOOL ok = MiaoSiteIsFront() && !MiaoInTabOverview();
+				MiaoLog([NSString stringWithFormat:@"browsing via openURL %d", ok]);
+				if (done) done(ok);
+			});
+		});
+		return;
+	}
+	/* non overview ma neanche sito davanti: c'e' un ad o una pagina vuota */
+	if (done) done(NO);
 }
 
 /**
@@ -1587,6 +1689,25 @@ static void MiaoLeaveTabGrid(void (^done)(BOOL onSite)) {
  restituisce NO: al chiamante resta la via JS.
  */
 static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
+	/* Gia' in panoramica: non ritoccare Schede (riaprirebbe / confonderebbe). */
+	if (MiaoInTabOverview()) {
+		MiaoLog(@"UI nativa: gia' in panoramica, chiudo l'ad da qui");
+		MiaoAXNode *card = MiaoSiteCard();
+		NSArray<MiaoAXNode *> *closers = MiaoAXFindAll(MiaoNamesClose());
+		MiaoAXNode *adClose = nil;
+		for (MiaoAXNode *c in closers) {
+			if (c.frame.size.width > 90 && c.frame.size.height > 90) continue;
+			if (card && CGRectContainsPoint(CGRectInset(card.frame, -14, -14), c.center)) continue;
+			adClose = c;
+			break;
+		}
+		if (adClose) MiaoTapNode(adClose, @"chiudi ad");
+		MiaoAfter(MiaoHumanDelay(0.8, 0.5), ^{
+			MiaoLeaveTabGrid(0, ^(BOOL onSite) { if (done) done(onSite); });
+		});
+		return;
+	}
+
 	MiaoAXNode *tabs = MiaoAXFind(MiaoNamesTabs());
 	if (!tabs) {
 		MiaoLog([NSString stringWithFormat:@"UI nativa: pulsante schede non trovato\n%@", MiaoAXDump()]);
@@ -1616,7 +1737,7 @@ static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
 		if (!adClose) {
 			// esci dalla griglia comunque, poi ci pensa la via JS
 			MiaoLog([NSString stringWithFormat:@"griglia: nessuna X per l'ad\n%@", MiaoAXDump()]);
-			MiaoLeaveTabGrid(^(BOOL onSite) {
+			MiaoLeaveTabGrid(0, ^(BOOL onSite) {
 				MiaoLog([NSString stringWithFormat:@"griglia: uscita senza chiudere, sul sito=%d", onSite]);
 				if (done) done(NO);
 			});
@@ -1625,7 +1746,7 @@ static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
 
 		MiaoTapNode(adClose, @"chiudi ad");
 		MiaoAfter(MiaoHumanDelay(0.9, 0.6), ^{
-			MiaoLeaveTabGrid(^(BOOL onSite) { if (done) done(onSite); });
+			MiaoLeaveTabGrid(0, ^(BOOL onSite) { if (done) done(onSite); });
 		});
 	});
 }
@@ -1684,6 +1805,13 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 		if (done) done(NO);
 		return;
 	}
+	/* Prima di tutto: se siamo in Mostra pannelli, esci. Riaprire Schede qui
+	   peggiora lo stato (griglia su griglia) ed e' quello che ha lasciato il
+	   run a scrollare i pannelli. */
+	if (MiaoInTabOverview()) {
+		MiaoEnsureBrowsing(done);
+		return;
+	}
 	if (MiaoSiteIsFront()) {
 		if (done) done(YES);
 		return;
@@ -1691,7 +1819,7 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 	MiaoAck([NSString stringWithFormat:@"sito non in primo piano, recupero\n%@", MiaoWebState()]);
 
 	MiaoCloseAdTabNative(^(BOOL nativeOk) {
-		if (nativeOk && MiaoSiteIsFront()) {
+		if (nativeOk && MiaoSiteIsFront() && !MiaoInTabOverview()) {
 			MiaoAck(@"tornato sul sito dalla UI di Safari");
 			if (done) done(YES);
 			return;
@@ -1699,6 +1827,10 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 		MiaoCloseAdWebViews(^(NSInteger closed) {
 			MiaoLog([NSString stringWithFormat:@"chiuse %ld pagine ads", (long)closed]);
 			MiaoAfter(1.0, ^{
+				if (MiaoInTabOverview()) {
+					MiaoEnsureBrowsing(done);
+					return;
+				}
 				if (MiaoSiteIsFront()) {
 					MiaoLog(@"front ok via window.close");
 					if (done) done(YES);
@@ -1707,7 +1839,7 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 				MiaoCloseNonNoxTabs();
 				MiaoSelectSiteTab();
 				MiaoAfter(1.0, ^{
-					if (MiaoSiteIsFront()) {
+					if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
 						MiaoLog(@"front ok via API schede");
 						if (done) done(YES);
 						return;
@@ -1715,7 +1847,7 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 					// ultima via: riapri la home, Safari porta il sito davanti
 					MiaoOpenURL(MiaoHomeURL());
 					MiaoAfter(3.5, ^{
-						BOOL ok = MiaoSiteIsFront();
+						BOOL ok = MiaoSiteIsFront() && !MiaoInTabOverview();
 						MiaoAck([NSString stringWithFormat:@"recupero %@\n%@",
 							ok ? @"ok via openURL" : @"FALLITO", MiaoWebState()]);
 						if (done) done(ok);
@@ -1733,11 +1865,11 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 	NSInteger before = MiaoForeignTabCount();
 	if (before <= 0 && !MiaoForeignFront()) {
-		if (done) done(MiaoSiteIsFront());
+		MiaoEnsureBrowsing(^(BOOL ok) { if (done) done(ok); });
 		return;
 	}
 	MiaoCloseAdTabNative(^(BOOL nativeOk) {
-		if (nativeOk && MiaoForeignTabCount() < before && MiaoSiteIsFront()) {
+		if (nativeOk && MiaoForeignTabCount() < before && MiaoSiteIsFront() && !MiaoInTabOverview()) {
 			MiaoAck([NSString stringWithFormat:@"ads chiuse dalla UI di Safari (%ld -> %ld)",
 				(long)before, (long)MiaoForeignTabCount()]);
 			if (done) done(YES);
@@ -1746,7 +1878,13 @@ static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 		MiaoCloseAdWebViews(^(NSInteger closed) {
 			MiaoAck([NSString stringWithFormat:@"ads chiuse via window.close (%ld)", (long)closed]);
 			MiaoAfter(MiaoHumanDelay(0.8, 0.6), ^{
-				MiaoEnsureSiteFront(^(BOOL ok) { if (done) done(ok); });
+				MiaoEnsureSiteFront(^(BOOL ok) {
+					if (ok && MiaoInTabOverview()) {
+						MiaoEnsureBrowsing(done);
+						return;
+					}
+					if (done) done(ok && !MiaoInTabOverview());
+				});
 			});
 		});
 	});
@@ -2030,17 +2168,39 @@ static void MiaoRunWaitSkip(void) {
 
 /// 5) secondo tap sullo STESSO video: il primo l'ha consumato il popunder
 static void MiaoRunSecondTap(void) {
+	/* Prima di chiedere path o scrollare: fuori da Mostra pannelli. */
+	if (MiaoInTabOverview()) {
+		MiaoEnsureBrowsing(^(BOOL ok) {
+			if (!ok) {
+				MiaoStepResult(@"ritorno-sito", NO, @"overview non recuperata");
+				MiaoRunEnd(@"bloccato in Mostra pannelli", NO);
+				return;
+			}
+			MiaoAfter(MiaoHumanDelay(0.6, 0.5), ^{ MiaoRunSecondTap(); });
+		});
+		return;
+	}
+
 	/* La domanda "sono sul video?" va fatta alla pagina che si vede. Chiedendola
 	   alla webview del sito mentre davanti c'e' un ad, la risposta e' sempre
 	   quella che ci aspettiamo e non ci accorgiamo di essere altrove. */
-	if (MiaoForeignFront()) {
+	if (MiaoForeignFront() || !MiaoSiteIsFront()) {
 		MiaoStepResult(@"ritorno-sito", NO, @"pagina esterna ancora davanti");
 		MiaoCloseAdsHuman(^(BOOL front) {
-			if (!front) {
-				MiaoRunEnd(@"pagina esterna davanti, sito non recuperato", NO);
-				return;
-			}
-			MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
+			(void)front;
+			MiaoEnsureSiteFront(^(BOOL ok) {
+				if (!ok || MiaoInTabOverview()) {
+					MiaoEnsureBrowsing(^(BOOL browsing) {
+						if (!browsing) {
+							MiaoRunEnd(@"pagina esterna davanti, sito non recuperato", NO);
+							return;
+						}
+						MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
+					});
+					return;
+				}
+				MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
+			});
 		});
 		return;
 	}
@@ -2083,33 +2243,63 @@ static void MiaoRunAfterFirstTap(void) {
 		/* Nessun popunder non e' un errore del run: dipende dal frequency cap.
 		   Va registrato come tale, altrimenti i risultati non si leggono. */
 		MiaoStepResult(@"popunder", YES, @"nessuno (frequency cap)");
-		MiaoRunSecondTap();
+		MiaoEnsureBrowsing(^(BOOL ok) {
+			if (!ok) {
+				MiaoRunEnd(@"dopo tap: non sulla pagina", NO);
+				return;
+			}
+			MiaoRunSecondTap();
+		});
 		return;
 	}
 	MiaoStepResult(@"popunder", YES, [NSString stringWithFormat:@"%ld pagine esterne", (long)ads]);
 	MiaoToast([NSString stringWithFormat:@"Ads +%ld", (long)ads]);
-	/* Chi finisce su un popunder ci guarda un attimo prima di chiuderlo: un
-	   paio di secondi e un piccolo scroll, non una chiusura istantanea. */
-	MiaoAfter(MiaoHumanDelay(1.4, 1.2), ^{
-		MiaoGestureScroll(90 + (CGFloat)arc4random_uniform(220), ^{
-			MiaoAfter(MiaoHumanDelay(1.6, 2.0), ^{
+	/* Chi finisce su un popunder ci guarda un po' prima di chiuderlo: tempo
+	   sull'ad + piccolo scroll (solo se la pagina ads e' davvero piena). */
+	MiaoAfter(MiaoHumanDelay(2.2, 1.6), ^{
+		void (^chiudi)(void) = ^{
+			MiaoAfter(MiaoHumanDelay(2.0, 2.2), ^{
 				MiaoToast(@"Chiudo ads");
 				MiaoCloseAdsHuman(^(BOOL front) {
-					MiaoStepResult(@"chiudi-ads", front,
-						[NSString stringWithFormat:@"estranee=%ld", (long)MiaoForeignTabCount()]);
-					if (!front) {
-						MiaoRunEnd(@"non torno sul sito", NO);
-						return;
-					}
-					MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
+					(void)front;
+					/* front=YES non basta: dobbiamo essere FUORI dalla panoramica */
+					MiaoEnsureBrowsing(^(BOOL browsing) {
+						BOOL ok = browsing && MiaoSiteIsFront() && !MiaoInTabOverview();
+						MiaoStepResult(@"chiudi-ads", ok,
+							[NSString stringWithFormat:@"estranee=%ld overview=%d front=%d",
+								(long)MiaoForeignTabCount(),
+								MiaoInTabOverview() ? 1 : 0, front ? 1 : 0]);
+						if (!ok) {
+							MiaoRunEnd(@"non torno sulla pagina (pannelli?)", NO);
+							return;
+						}
+						MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
+					});
 				});
 			});
-		});
+		};
+		CGRect area;
+		if (MiaoContentArea(&area)) {
+			MiaoGestureScroll(90 + (CGFloat)arc4random_uniform(220), chiudi);
+		} else {
+			chiudi();
+		}
 	});
 }
 
 /// 2-3) scroll a gesti, scelta del video, primo tap
 static void MiaoRunPickAndTap(void) {
+	if (MiaoInTabOverview() || !MiaoSiteIsFront()) {
+		MiaoEnsureBrowsing(^(BOOL ok) {
+			if (!ok) {
+				MiaoStepResult(@"scroll", NO, @"non sulla pagina (pannelli)");
+				MiaoRunEnd(@"non sulla pagina prima dello scroll", NO);
+				return;
+			}
+			MiaoAfter(0.5, ^{ MiaoRunPickAndTap(); });
+		});
+		return;
+	}
 	MiaoToast(@"Scroll...");
 	// una passata esplorativa, come chi arriva sulla home e guarda cosa c'e'
 	MiaoGestureScroll(200 + (CGFloat)arc4random_uniform(300), ^{
@@ -2314,7 +2504,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.11.1 esiti");
+	MiaoLog(@"safari ready 0.11.2 esiti");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -2464,7 +2654,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.11.1 x%ld", (long)n]);
+	MiaoLog([NSString stringWithFormat:@"session 0.11.2 x%ld", (long)n]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld...", (long)n]);
 	/* Traccia batch da SpringBoard: cosi' il pannello vede qualcosa anche se
 	   Safari non riesce ancora a scrivere gli step del singolo run. */
@@ -2547,7 +2737,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.11.1 - app o 3x Vol");
+		MiaoToast(@"Miao 0.11.2 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
