@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.0
+Version: 0.14.1
 Architecture: iphoneos-arm64
-Description: ~2 min fullscreen watch; no pause-tap; no post-run scroll.
+Description: Exit tab overview reliably; close ads with back first.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
