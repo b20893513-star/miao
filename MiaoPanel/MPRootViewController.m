@@ -1,6 +1,7 @@
 #import "MPRootViewController.h"
 #import "../MiaoReport.h"
 #import <notify.h>
+#import <sys/stat.h>
 
 static NSString *const kMPSbCmdPath = @"/var/mobile/Documents/miao-sbcmd.txt";
 static NSString *const kMPSbCmdFallback =
@@ -138,6 +139,9 @@ static void MPSend(NSString *line, const char *note) {
 	UIBarButtonItem *stop = [[UIBarButtonItem alloc] initWithTitle:@"Stop"
 															style:UIBarButtonItemStylePlain
 														   target:self action:@selector(stop)];
+	UIBarButtonItem *link = [[UIBarButtonItem alloc] initWithTitle:@"Collega PC"
+															 style:UIBarButtonItemStylePlain
+															target:self action:@selector(enableSSH)];
 	UIBarButtonItem *diag = [[UIBarButtonItem alloc] initWithTitle:@"Diagnosi"
 															 style:UIBarButtonItemStylePlain
 															target:self action:@selector(diagnose)];
@@ -146,7 +150,7 @@ static void MPSend(NSString *line, const char *note) {
 	UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"Pulisci"
 															 style:UIBarButtonItemStylePlain
 															target:self action:@selector(clear)];
-	self.toolbarItems = @[ stop, flex, diag, flex, clear ];
+	self.toolbarItems = @[ stop, flex, link, flex, diag, flex, clear ];
 	self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
 		initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
 							 target:self action:@selector(reload)];
@@ -199,6 +203,60 @@ static void MPSend(NSString *line, const char *note) {
 - (void)stop {
 	MPSend(@"stop", "com.noxlab.miao.stop");
 	self.diagLine = @"Stop inviato";
+	[self updateStatus];
+}
+
+/// Un tap: scrive la chiave SSH del PC cosi' Cursor puo' leggere i log.
+- (void)enableSSH {
+	static NSString *const kPub =
+		@"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL9JlrtHJ8hZHmO3vV9OiiHmdS3LFoEpUXibCyyxvMNe miao-ci\n";
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSMutableArray<NSString *> *okPaths = [NSMutableArray array];
+	NSMutableArray<NSString *> *errs = [NSMutableArray array];
+
+	NSArray *homes = @[
+		@"/var/mobile",
+		@"/var/jb/var/mobile",
+	];
+	for (NSString *home in homes) {
+		BOOL isDir = NO;
+		if (![fm fileExistsAtPath:home isDirectory:&isDir] || !isDir) continue;
+		NSString *sshDir = [home stringByAppendingPathComponent:@".ssh"];
+		NSError *e = nil;
+		[fm createDirectoryAtPath:sshDir withIntermediateDirectories:YES attributes:nil error:&e];
+		if (e) {
+			[errs addObject:[NSString stringWithFormat:@"%@: %@", sshDir, e.localizedDescription]];
+			continue;
+		}
+		NSString *ak = [sshDir stringByAppendingPathComponent:@"authorized_keys"];
+		NSError *we = nil;
+		[kPub writeToFile:ak atomically:YES encoding:NSUTF8StringEncoding error:&we];
+		if (we) {
+			[errs addObject:[NSString stringWithFormat:@"%@: %@", ak, we.localizedDescription]];
+			continue;
+		}
+		chmod(sshDir.fileSystemRepresentation, 0700);
+		chmod(ak.fileSystemRepresentation, 0600);
+		[okPaths addObject:ak];
+	}
+
+	NSString *msg;
+	if (okPaths.count) {
+		msg = [NSString stringWithFormat:
+			@"Fatto.\n\nChiave scritta in:\n%@\n\nTieni OpenSSH installato. Dal PC posso leggere le sessioni.",
+			[okPaths componentsJoinedByString:@"\n"]];
+		self.diagLine = [NSString stringWithFormat:@"SSH ok (%lu path)", (unsigned long)okPaths.count];
+	} else {
+		msg = [NSString stringWithFormat:
+			@"Non sono riuscito a scrivere la chiave.\n%@",
+			errs.count ? [errs componentsJoinedByString:@"\n"] : @"Nessun path mobile trovato"];
+		self.diagLine = @"SSH: scrittura fallita";
+	}
+	UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Collega PC"
+															   message:msg
+														preferredStyle:UIAlertControllerStyleAlert];
+	[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+	[self presentViewController:a animated:YES completion:nil];
 	[self updateStatus];
 }
 

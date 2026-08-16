@@ -3267,7 +3267,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.5 open-home");
+	MiaoLog(@"safari ready 0.14.6 collega-pc");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3416,7 +3416,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.5 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.6 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3517,7 +3517,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.5 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.6 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

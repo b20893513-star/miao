@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.5
+Version: 0.14.6
 Architecture: iphoneos-arm64
-Description: Open noxreel on cold start; mid-run still no reopen spam.
+Description: One-tap Collega PC for SSH; open home on cold start.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
