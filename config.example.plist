@@ -1,7 +1,8 @@
 # Prefs Miao — copia su:
 #   /var/mobile/Library/Preferences/com.noxlab.miao.plist
 #
-# AllowJSVideoFallback=true apre /video/ senza gesture → NESSUN popunder Exo.
+# Debug=true installa la sonda JS sulla pagina: usalo solo per diagnosticare,
+# lascia tracce (listener + una proprieta' su window) finche' non arriva `clean`.
 
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -16,7 +17,7 @@
 	<!-- Quanti click sul sito fa il loop ads per ogni ciclo -->
 	<key>LoopTaps</key>
 	<integer>5</integer>
-	<key>AllowJSVideoFallback</key>
+	<key>Debug</key>
 	<false/>
 	<key>DisableBackboardHID</key>
 	<false/>

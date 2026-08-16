@@ -8,7 +8,7 @@ include $(THEOS)/makefiles/common.mk
 # l'HID resta come fallback. MiaoHID = backboardd best-effort.
 TWEAK_NAME = Miao MiaoHID
 
-Miao_FILES = Tweak.x MiaoCore.m TouchSimUIKit.m TouchSimSafari.m TouchSimBB.m
+Miao_FILES = Tweak.x MiaoCore.m TouchSimUIKit.m MiaoAX.m TouchSimSafari.m TouchSimBB.m
 Miao_CFLAGS = -fobjc-arc -Wno-unused-variable -Wno-deprecated-declarations -Wno-unused-function
 Miao_FRAMEWORKS = UIKit Foundation CoreGraphics CoreFoundation QuartzCore
 

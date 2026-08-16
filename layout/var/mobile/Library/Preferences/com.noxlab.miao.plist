@@ -10,6 +10,8 @@
 	<integer>1</integer>
 	<key>LoopTaps</key>
 	<integer>5</integer>
+	<key>Debug</key>
+	<false/>
 	<key>Mode</key>
 	<string>session</string>
 </dict>

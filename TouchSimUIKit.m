@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <stdlib.h>
+#import <math.h>
 
 @interface UIApplication (MiaoPriv)
 - (id)_touchesEvent;
@@ -48,6 +49,22 @@ static void MiaoSetPoint(id obj, NSString *name, CGPoint p, BOOL reset, NSMutabl
 	});
 }
 
+/**
+ Scrive un campo float/double direttamente nell'ivar. Serve per `majorRadius`:
+ su iOS 16 non esiste un setter pubblico ne' privato affidabile, ma un touch con
+ raggio 0 e' un touch che nessun dito reale produce.
+ */
+static BOOL MiaoSetFloatIvar(id obj, const char *name, double value) {
+	Ivar iv = class_getInstanceVariable([obj class], name);
+	if (!iv) return NO;
+	const char *enc = ivar_getTypeEncoding(iv);
+	if (!enc || !enc[0]) return NO;
+	void *slot = (char *)(__bridge void *)obj + ivar_getOffset(iv);
+	if (enc[0] == 'f') { *(float *)slot = (float)value; return YES; }
+	if (enc[0] == 'd') { *(double *)slot = value; return YES; }
+	return NO;
+}
+
 static UIWindow *MiaoActiveWindow(void) {
 	UIWindow *best = nil;
 	CGFloat bestArea = 0;
@@ -74,16 +91,31 @@ static CGFloat MiaoJitter(CGFloat amount) {
 	return ((CGFloat)arc4random_uniform(2001) / 1000.0 - 1.0) * amount;
 }
 
+static double MiaoRand01(void) {
+	return (double)arc4random_uniform(10001) / 10000.0;
+}
+
 static NSTimeInterval MiaoNow(void) {
 	return [[NSProcessInfo processInfo] systemUptime];
 }
 
+/// Impronta del dito: un pollice appoggiato copre ~8-16 pt e respira ad ogni frame.
+static void MiaoTouchRadius(UITouch *touch, CGFloat base) {
+	CGFloat r = base + MiaoJitter(0.6);
+	if (!MiaoSetFloatIvar(touch, "_majorRadius", r))
+		MiaoSetDouble(touch, @"setMajorRadius:", r, nil);
+	MiaoSetFloatIvar(touch, "_majorRadiusTolerance", 4.0);
+	MiaoSetFloatIvar(touch, "_minorRadius", r * 0.86);
+}
+
 /// Configura la stessa UITouch per la fase corrente.
 static void MiaoTouchPhase(UITouch *touch, UIWindow *win, UIView *view, CGPoint pt,
-						   UITouchPhase phase, BOOL first, NSMutableString *missing) {
+						   UITouchPhase phase, BOOL first, CGFloat radius,
+						   NSMutableString *missing) {
 	MiaoSetDouble(touch, @"setTimestamp:", MiaoNow(), missing);
 	MiaoSetInteger(touch, @"setPhase:", (NSInteger)phase, missing);
 	MiaoSetPoint(touch, @"_setLocationInWindow:resetPrevious:", pt, first, missing);
+	MiaoTouchRadius(touch, radius);
 	if (first) {
 		MiaoSetObj(touch, @"setWindow:", win, missing);
 		MiaoSetObj(touch, @"setView:", view, missing);
@@ -92,8 +124,6 @@ static void MiaoTouchPhase(UITouch *touch, UIWindow *win, UIView *view, CGPoint 
 		MiaoSetInteger(touch, @"_setPathIndex:", 1, nil);
 		MiaoSetInteger(touch, @"setType:", 0, nil); // UITouchTypeDirect
 		MiaoSetBool(touch, @"_setIsFirstTouchForView:", YES, nil);
-		MiaoSetBool(touch, @"setIsTap:", YES, nil);
-		MiaoSetBool(touch, @"_setIsTapToClick:", YES, nil);
 	}
 }
 
@@ -109,13 +139,134 @@ static void MiaoSendTouch(UITouch *touch) {
 		((void (*)(id, SEL))objc_msgSend)(event, clearSel);
 
 	SEL addSel = NSSelectorFromString(@"_addTouch:forDelayedDelivery:");
-	if ([event respondsToSelector:addSel])
-		((void (*)(id, SEL, id, BOOL))objc_msgSend)(event, addSel, touch, NO);
-	else
-		return;
+	if (![event respondsToSelector:addSel]) return;
+	((void (*)(id, SEL, id, BOOL))objc_msgSend)(event, addSel, touch, NO);
 
 	[app sendEvent:event];
 }
+
+#pragma mark - Motore gesti
+
+/// Tutto quello che serve per portare avanti un gesto tra un frame e il successivo.
+@interface MiaoGesture : NSObject
+@property (nonatomic, strong) UITouch *touch;
+@property (nonatomic, strong) UIWindow *win;
+@property (nonatomic, strong) UIView *view;
+@property (nonatomic, strong) NSArray<NSValue *> *points;
+@property (nonatomic) NSTimeInterval step;
+@property (nonatomic) CGFloat radius;
+@property (nonatomic, copy) void (^done)(void);
+@end
+
+@implementation MiaoGesture
+@end
+
+static BOOL MiaoTouchAPIReady(NSString **why) {
+	UIApplication *app = UIApplication.sharedApplication;
+	if (![app respondsToSelector:NSSelectorFromString(@"_touchesEvent")]) {
+		if (why) *why = @"no _touchesEvent";
+		return NO;
+	}
+	id ev = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"_touchesEvent"));
+	if (![ev respondsToSelector:NSSelectorFromString(@"_addTouch:forDelayedDelivery:")]) {
+		if (why) *why = @"no _addTouch:";
+		return NO;
+	}
+	return YES;
+}
+
+static UITouch *MiaoNewTouch(UIView *view) {
+	SEL initInView = NSSelectorFromString(@"initInView:");
+	if ([UITouch instancesRespondToSelector:initInView])
+		return ((id (*)(id, SEL, id))objc_msgSend)([UITouch alloc], initInView, view);
+	return [[UITouch alloc] init];
+}
+
+/**
+ Manda i punti restanti uno per giro di runloop. Le fasi devono stare su giri
+ distinti: se le accodiamo tutte subito i gesture recognizer non avanzano e
+ UIScrollView non calcola nessuna velocita'.
+ */
+static void MiaoGestureAdvance(MiaoGesture *g, NSInteger idx) {
+	if (!g.points.count) return;
+	/* Se la view sparisce a metà gesto (scheda chiusa, pagina ricaricata) non
+	   insistiamo: un dito vero verrebbe annullato, non teletrasportato. */
+	if (!g.view.window) {
+		CGPoint at = g.points[MAX((NSInteger)0, MIN(idx, (NSInteger)g.points.count - 1))].CGPointValue;
+		MiaoTouchPhase(g.touch, g.win, g.view, at, UITouchPhaseCancelled, NO, g.radius, nil);
+		MiaoSendTouch(g.touch);
+		if (g.done) g.done();
+		return;
+	}
+	if (idx >= (NSInteger)g.points.count) {
+		CGPoint last = g.points.lastObject.CGPointValue;
+		MiaoTouchPhase(g.touch, g.win, g.view, last, UITouchPhaseEnded, NO, g.radius, nil);
+		MiaoSendTouch(g.touch);
+		if (g.done) g.done();
+		return;
+	}
+	CGPoint p = g.points[idx].CGPointValue;
+	MiaoTouchPhase(g.touch, g.win, g.view, p, UITouchPhaseMoved, NO, g.radius, nil);
+	MiaoSendTouch(g.touch);
+
+	// il digitizer non consegna a intervalli perfetti: +/-20% di scarto
+	NSTimeInterval wait = g.step * (0.8 + MiaoRand01() * 0.4);
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)),
+				   dispatch_get_main_queue(), ^{
+		MiaoGestureAdvance(g, idx + 1);
+	});
+}
+
+static BOOL MiaoRunGesture(CGPoint start, NSArray<NSValue *> *movePoints,
+						   NSTimeInterval totalTime, NSString *label, BOOL isTap,
+						   NSString **why, void (^done)(void)) {
+	UIWindow *win = MiaoActiveWindow();
+	if (!win) {
+		if (why) *why = @"no window";
+		return NO;
+	}
+	UIView *view = [win hitTest:start withEvent:nil];
+	if (!view) {
+		if (why) *why = @"no hitTest";
+		return NO;
+	}
+	if (!MiaoTouchAPIReady(why)) return NO;
+
+	UITouch *touch = MiaoNewTouch(view);
+	if (!touch) {
+		if (why) *why = @"no UITouch";
+		return NO;
+	}
+
+	MiaoGesture *g = [MiaoGesture new];
+	g.touch = touch;
+	g.win = win;
+	g.view = view;
+	g.points = movePoints;
+	g.step = movePoints.count ? totalTime / (double)movePoints.count : totalTime;
+	g.radius = 8.5 + (CGFloat)MiaoRand01() * 6.0;
+	g.done = done;
+
+	NSMutableString *missing = [NSMutableString string];
+	MiaoTouchPhase(touch, win, view, start, UITouchPhaseBegan, YES, g.radius, missing);
+	if (isTap) {
+		MiaoSetBool(touch, @"setIsTap:", YES, nil);
+		MiaoSetBool(touch, @"_setIsTapToClick:", YES, nil);
+	}
+	if (why) *why = missing.length ? [missing copy] : @"ok";
+	NSLog(@"[MiaoUIK] %@ start=(%.0f,%.0f) n=%lu t=%.0fms view=%@ missing=[%@]",
+		  label, start.x, start.y, (unsigned long)movePoints.count, totalTime * 1000.0,
+		  NSStringFromClass([view class]), missing.length ? missing : @"-");
+
+	MiaoSendTouch(touch);
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(g.step * NSEC_PER_SEC)),
+				   dispatch_get_main_queue(), ^{
+		MiaoGestureAdvance(g, 0);
+	});
+	return YES;
+}
+
+#pragma mark - Gesti pubblici
 
 BOOL MiaoUIKitHumanTap(CGPoint winPt, NSString **why) {
 	if (![NSThread isMainThread]) {
@@ -126,70 +277,47 @@ BOOL MiaoUIKitHumanTap(CGPoint winPt, NSString **why) {
 		return ok;
 	}
 
-	UIWindow *win = MiaoActiveWindow();
-	if (!win) {
-		if (why) *why = @"no window";
-		return NO;
-	}
-	UIView *view = [win hitTest:winPt withEvent:nil];
-	if (!view) {
-		if (why) *why = @"no hitTest";
-		return NO;
-	}
+	// Un dito reale striscia di 1-2 pt e resta giu' 55-130 ms.
+	NSTimeInterval hold = 0.055 + MiaoRand01() * 0.075;
+	CGPoint d1 = CGPointMake(winPt.x + MiaoJitter(1.4), winPt.y + MiaoJitter(1.4));
+	CGPoint d2 = CGPointMake(d1.x + MiaoJitter(1.0), d1.y + MiaoJitter(1.0));
+	NSArray *pts = @[ [NSValue valueWithCGPoint:d1], [NSValue valueWithCGPoint:d2] ];
+	return MiaoRunGesture(winPt, pts, hold, @"tap", YES, why, nil);
+}
 
-	UITouch *touch = nil;
-	SEL initInView = NSSelectorFromString(@"initInView:");
-	if ([UITouch instancesRespondToSelector:initInView])
-		touch = ((id (*)(id, SEL, id))objc_msgSend)([UITouch alloc], initInView, view);
-	else
-		touch = [[UITouch alloc] init];
-	if (!touch) {
-		if (why) *why = @"no UITouch";
-		return NO;
-	}
-
-	NSMutableString *missing = [NSMutableString string];
-	MiaoTouchPhase(touch, win, view, winPt, UITouchPhaseBegan, YES, missing);
-
-	UIApplication *app = UIApplication.sharedApplication;
-	if (![app respondsToSelector:NSSelectorFromString(@"_touchesEvent")]) {
-		if (why) *why = @"no _touchesEvent";
-		return NO;
-	}
-	id probeEvent = ((id (*)(id, SEL))objc_msgSend)(app, NSSelectorFromString(@"_touchesEvent"));
-	if (![probeEvent respondsToSelector:NSSelectorFromString(@"_addTouch:forDelayedDelivery:")]) {
-		if (why) *why = @"no _addTouch:";
-		return NO;
-	}
-
-	NSLog(@"[MiaoUIK] tap win=(%.0f,%.0f) view=%@ missing=[%@]",
-		winPt.x, winPt.y, NSStringFromClass([view class]),
-		missing.length ? missing : @"-");
-	if (why) *why = missing.length ? [missing copy] : @"ok";
-
-	MiaoSendTouch(touch);
-
-	// Un dito reale si muove di 1-2 px e resta giu' 55-130 ms. Le fasi vanno su
-	// giri di runloop distinti, altrimenti i gesture recognizer non avanzano.
-	NSTimeInterval hold = 0.055 + (double)arc4random_uniform(75) / 1000.0;
-	NSTimeInterval step = hold / 3.0;
-	CGPoint drift = CGPointMake(winPt.x + MiaoJitter(1.4), winPt.y + MiaoJitter(1.4));
-	CGPoint drift2 = CGPointMake(drift.x + MiaoJitter(1.0), drift.y + MiaoJitter(1.0));
-
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(step * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		MiaoTouchPhase(touch, win, view, drift, UITouchPhaseMoved, NO, nil);
-		MiaoSendTouch(touch);
-
-		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(step * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-			MiaoTouchPhase(touch, win, view, drift2, UITouchPhaseMoved, NO, nil);
-			MiaoSendTouch(touch);
-
-			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(step * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-				MiaoTouchPhase(touch, win, view, drift2, UITouchPhaseEnded, NO, nil);
-				MiaoSendTouch(touch);
-			});
+BOOL MiaoUIKitSwipe(CGPoint from, CGPoint to, NSTimeInterval duration,
+					NSString **why, void (^done)(void)) {
+	if (![NSThread isMainThread]) {
+		__block BOOL ok = NO;
+		__block NSString *inner = nil;
+		dispatch_sync(dispatch_get_main_queue(), ^{
+			ok = MiaoUIKitSwipe(from, to, duration, &inner, done);
 		});
-	});
+		if (why) *why = inner;
+		return ok;
+	}
 
-	return YES;
+	duration = MAX(0.09, MIN(1.6, duration));
+	NSInteger steps = MAX(4, (NSInteger)llround(duration / 0.016));
+
+	CGFloat dx = to.x - from.x, dy = to.y - from.y;
+	CGFloat len = sqrt(dx * dx + dy * dy);
+	CGFloat px = len > 0.5 ? -dy / len : 0;   // normale al movimento
+	CGFloat py = len > 0.5 ? dx / len : 0;
+	CGFloat wobble = 0.7 + (CGFloat)MiaoRand01() * 2.6;
+	CGFloat phase = (CGFloat)MiaoRand01() * (CGFloat)(2 * M_PI);
+
+	NSMutableArray<NSValue *> *pts = [NSMutableArray arrayWithCapacity:(NSUInteger)steps];
+	for (NSInteger i = 1; i <= steps; i++) {
+		double t = (double)i / (double)steps;
+		/* Profilo di velocita': parte da fermo e viene rilasciato ancora in
+		   corsa. E' cosi' che nasce l'inerzia: se il dito si fermasse prima di
+		   staccarsi la pagina non scorrerebbe oltre e si vedrebbe subito che
+		   non e' una persona. */
+		double e = pow(t, 1.32);
+		CGFloat x = from.x + dx * e + px * (CGFloat)sin(phase + t * M_PI * 1.4) * wobble + MiaoJitter(0.35);
+		CGFloat y = from.y + dy * e + py * (CGFloat)sin(phase + t * M_PI * 1.4) * wobble + MiaoJitter(0.35);
+		[pts addObject:[NSValue valueWithCGPoint:CGPointMake(x, y)]];
+	}
+	return MiaoRunGesture(from, pts, duration, @"swipe", NO, why, done);
 }
