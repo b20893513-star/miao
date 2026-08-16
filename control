@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.6
+Version: 0.14.7
 Architecture: iphoneos-arm64
-Description: One-tap Collega PC for SSH; open home on cold start.
+Description: Mood via run cmd; robust Schede/X close with API fallback.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

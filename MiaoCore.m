@@ -29,6 +29,9 @@ static NSString *const kSbCmdPath = @"/var/mobile/Documents/miao-sbcmd.txt";
 static NSString *const kMoodPath = @"/var/mobile/Documents/miao-mood.txt";
 static NSString *const kMoodPathFallback =
 	@"/var/mobile/Library/Preferences/com.noxlab.miao.mood.txt";
+/// Safari sandbox: stesso path JB usato dagli events.
+static NSString *const kMoodPathJB =
+	@"/var/jb/var/mobile/Library/Miao/mood.txt";
 static NSString *const kAckPath = @"/var/mobile/Documents/miao-ack.txt";
 static NSString *const kLogPath = @"/var/mobile/Documents/miao-loaded.txt";
 static NSString *const kHidPath = @"/var/tmp/miao-hid.txt";
@@ -210,8 +213,16 @@ static NSInteger MiaoParseMoodToken(NSString *tok) {
 	return -1;
 }
 
+static NSArray<NSString *> *MiaoMoodPaths(void) {
+	NSMutableArray *a = [NSMutableArray arrayWithObjects:kMoodPath, kMoodPathFallback, nil];
+	if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"]) {
+		[a addObject:kMoodPathJB];
+	}
+	return a;
+}
+
 static void MiaoMoodWrite(NSInteger mood) {
-	for (NSString *path in @[ kMoodPath, kMoodPathFallback ]) {
+	for (NSString *path in MiaoMoodPaths()) {
 		if (mood < 0) {
 			[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
 			continue;
@@ -221,11 +232,12 @@ static void MiaoMoodWrite(NSInteger mood) {
 								  withIntermediateDirectories:YES attributes:nil error:nil];
 		[[NSString stringWithFormat:@"%ld\n%@", (long)mood, MiaoMoodName(mood)]
 			writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		chmod(path.fileSystemRepresentation, 0666);
 	}
 }
 
 static NSInteger MiaoMoodRead(void) {
-	for (NSString *path in @[ kMoodPath, kMoodPathFallback ]) {
+	for (NSString *path in MiaoMoodPaths()) {
 		NSString *raw = [NSString stringWithContentsOfFile:path
 												 encoding:NSUTF8StringEncoding error:nil];
 		if (!raw.length) continue;
@@ -338,7 +350,10 @@ static void MiaoSendCmd(NSString *cmd) {
 	NSString *body = [NSString stringWithFormat:@"%@\n%.0f", cmd, [[NSDate date] timeIntervalSince1970]];
 	[body writeToFile:kCmdPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
 	MiaoLog([NSString stringWithFormat:@"cmd %@", cmd]);
-	notify_post([[NSString stringWithFormat:@"com.noxlab.miao.%@", cmd] UTF8String]);
+	/* Notify solo sul verbo (`run`), non su `run videolong`: altrimenti non matcha. */
+	NSString *verb = [[cmd componentsSeparatedByCharactersInSet:
+		[NSCharacterSet whitespaceCharacterSet]] firstObject] ?: cmd;
+	notify_post([[NSString stringWithFormat:@"com.noxlab.miao.%@", verb] UTF8String]);
 }
 
 #pragma mark - WKWebView / JS
@@ -2157,38 +2172,100 @@ static void MiaoRecoverFromOverview(void (^done)(BOOL ok)) {
 }
 
 /**
+ Dopo Schede: aspetta che la griglia sia davvero aperta. Se InTabOverview
+ resta falso (AX/lingue), forza comunque un giro di X + tap card: nei log
+ 0.14.6 chiudeva 0 X perche' usciva subito con overview=0.
+ */
+static void MiaoWaitOverviewThen(NSInteger tries, void (^then)(BOOL inGrid)) {
+	if (MiaoInTabOverview()) {
+		if (then) then(YES);
+		return;
+	}
+	if (tries >= 8) {
+		MiaoLog([NSString stringWithFormat:@"griglia: overview non rilevata\n%@", MiaoAXDump()]);
+		if (then) then(NO);
+		return;
+	}
+	MiaoAfter(0.35, ^{ MiaoWaitOverviewThen(tries + 1, then); });
+}
+
+/// Ultima carta: API private + SelectSiteTab. Su iOS 16 a volte funzionano.
+static BOOL MiaoForceSiteFrontAPI(void) {
+	NSInteger closed = MiaoCloseNonNoxTabs();
+	BOOL sel = MiaoSelectSiteTab();
+	MiaoLog([NSString stringWithFormat:@"force API close=%ld select=%d front=%d",
+		(long)closed, sel, MiaoSiteIsFront()]);
+	return MiaoSiteIsFront() && !MiaoInTabOverview();
+}
+
+/**
  Chiude le schede ads come a mano: quadrato → X su TUTTE le estranee →
  tap sulla scheda NoxReel. Niente openURL.
  */
 static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
-	void (^closeThenLeave)(void) = ^{
-		MiaoCloseAllForeignInGrid(8, 0, ^(NSInteger n) {
-			MiaoLog([NSString stringWithFormat:@"griglia: chiuse %ld X", (long)n]);
+	void (^finishOk)(BOOL) = ^(BOOL ok) {
+		if (ok) {
+			if (done) done(YES);
+			return;
+		}
+		/* Non siamo riusciti via UI: prova API, poi dichiara esito reale. */
+		BOOL api = MiaoForceSiteFrontAPI();
+		if (done) done(api);
+	};
+
+	void (^closeThenLeave)(BOOL forceX) = ^(BOOL forceX) {
+		void (^afterX)(NSInteger) = ^(NSInteger n) {
+			MiaoLog([NSString stringWithFormat:@"griglia: chiuse %ld X force=%d",
+				(long)n, forceX]);
 			MiaoAfter(MiaoBetween(0.45, 0.85), ^{
 				MiaoLeaveTabGrid(0, ^(BOOL onSite) {
-					if (onSite && MiaoForeignTabCount() == 0) {
-						if (done) done(YES);
+					if (onSite && MiaoSiteIsFront() && !MiaoInTabOverview()) {
+						/* Schede di fondo ok: le chiudiamo via API se restano. */
+						if (MiaoForeignTabCount() > 0) (void)MiaoCloseNonNoxTabs();
+						finishOk(YES);
 						return;
 					}
-					/* Ancora estranee: ripeti X senza riaprire Schede. */
 					if (MiaoInTabOverview() && MiaoForeignTabCount() > 0) {
 						MiaoCloseAllForeignInGrid(6, 0, ^(NSInteger n2) {
 							(void)n2;
 							MiaoLeaveTabGrid(0, ^(BOOL on2) {
-								if (done) done(on2 && MiaoSiteIsFront() && !MiaoInTabOverview());
+								if (on2 && MiaoSiteIsFront()) {
+									if (MiaoForeignTabCount() > 0) (void)MiaoCloseNonNoxTabs();
+									finishOk(YES);
+									return;
+								}
+								MiaoReturnToSiteTab(^(BOOL ok) { finishOk(ok); });
 							});
 						});
 						return;
 					}
-					MiaoReturnToSiteTab(^(BOOL ok) { if (done) done(ok); });
+					MiaoReturnToSiteTab(^(BOOL ok) { finishOk(ok); });
 				});
 			});
-		});
+		};
+
+		if (MiaoInTabOverview() || forceX) {
+			/* Anche se overview non e' "rilevata", prova comunque le X AX/geo. */
+			if (!MiaoInTabOverview() && forceX) {
+				MiaoLog(@"griglia: force X senza overview flag");
+				if (MiaoCloseOneForeignInGrid()) {
+					MiaoAfter(MiaoBetween(0.55, 0.95), ^{
+						MiaoCloseAllForeignInGrid(7, 1, afterX);
+					});
+					return;
+				}
+				afterX(0);
+				return;
+			}
+			MiaoCloseAllForeignInGrid(8, 0, afterX);
+			return;
+		}
+		afterX(0);
 	};
 
 	if (MiaoInTabOverview()) {
 		MiaoLog(@"UI nativa: gia' in panoramica, chiudo tutte le ads");
-		closeThenLeave();
+		closeThenLeave(NO);
 		return;
 	}
 
@@ -2199,12 +2276,14 @@ static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
 	if (!opened) opened = MiaoTapPt(MiaoPtTabs(), @"schede-quadrato");
 	if (!opened) {
 		MiaoLog([NSString stringWithFormat:@"UI nativa: quadrato schede non toccato\n%@", MiaoAXDump()]);
-		if (done) done(NO);
+		finishOk(NO);
 		return;
 	}
 
-	MiaoAfter(MiaoHumanDelay(1.2, 0.9), ^{
-		closeThenLeave();
+	MiaoAfter(MiaoHumanDelay(0.9, 0.5), ^{
+		MiaoWaitOverviewThen(0, ^(BOOL inGrid) {
+			closeThenLeave(!inGrid);
+		});
 	});
 }
 
@@ -2322,8 +2401,8 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 }
 
 /**
- Chiude le pagine ads dopo che l'impression e' stata registrata: prima con la UI
- di Safari, e solo se quella strada non porta a casa con `window.close()`.
+ Chiude le pagine ads dopo l'impression.
+ Ordine: Schede→X → SelectSiteTab/API → swipe Indietro. Niente openURL mid-run.
  */
 static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 	NSInteger before = MiaoForeignTabCount();
@@ -2332,23 +2411,41 @@ static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 		return;
 	}
 
-	void (^viaSafariUI)(void) = ^{
-		MiaoCloseAdTabNative(^(BOOL nativeOk) {
-			if (nativeOk && MiaoSiteIsFront() && !MiaoInTabOverview()) {
-				MiaoAck([NSString stringWithFormat:@"ads chiuse da Schede (%ld -> %ld)",
-					(long)before, (long)MiaoForeignTabCount()]);
-				if (done) done(YES);
-				return;
-			}
-			/* Niente window.close / openURL. Torna sulla scheda Nox. */
-			MiaoReturnToSiteTab(^(BOOL ok) {
-				if (done) done(ok && MiaoSiteIsFront() && !MiaoInTabOverview());
-			});
-		});
+	void (^report)(BOOL) = ^(BOOL ok) {
+		MiaoAck([NSString stringWithFormat:@"ads close %ld→%ld front=%d ov=%d",
+			(long)before, (long)MiaoForeignTabCount(),
+			MiaoSiteIsFront() ? 1 : 0, MiaoInTabOverview() ? 1 : 0]);
+		if (done) done(ok && MiaoSiteIsFront() && !MiaoInTabOverview());
 	};
 
-	/* Come a mano: quadrato Schede → X su tutte → tap scheda sito. */
-	viaSafariUI();
+	MiaoCloseAdTabNative(^(BOOL nativeOk) {
+		if (nativeOk && MiaoSiteIsFront() && !MiaoInTabOverview()) {
+			report(YES);
+			return;
+		}
+		if (MiaoForceSiteFrontAPI()) {
+			report(YES);
+			return;
+		}
+		MiaoReturnToSiteTab(^(BOOL ok) {
+			if (ok && MiaoSiteIsFront() && !MiaoInTabOverview()) {
+				report(YES);
+				return;
+			}
+			/* Ultima carta umana: Indietro dalla landing ad (stessa scheda). */
+			MiaoGoBackHuman(^(BOOL back) {
+				(void)back;
+				MiaoAfter(0.6, ^{
+					if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
+						report(YES);
+						return;
+					}
+					(void)MiaoForceSiteFrontAPI();
+					report(MiaoSiteIsFront() && !MiaoInTabOverview());
+				});
+			});
+		});
+	});
 }
 
 #pragma mark - Loop ads
@@ -3226,7 +3323,19 @@ static void MiaoHandle(NSString *cmd) {
 		MiaoActWhere(^(NSString *p) { MiaoToast(p ?: @"?"); });
 	} else if ([cmd isEqualToString:@"calib"]) {
 		MiaoActCalib();
-	} else if ([cmd isEqualToString:@"run"]) {
+	} else if ([cmd isEqualToString:@"run"] || [cmd hasPrefix:@"run "]) {
+		/* Mood sul comando: Safari non condivide gForcedMood con SpringBoard e
+		   spesso non legge miao-mood.txt scritto da SB (sandbox). */
+		NSArray *parts = [cmd componentsSeparatedByCharactersInSet:
+			[NSCharacterSet whitespaceCharacterSet]];
+		for (NSUInteger i = 1; i < parts.count; i++) {
+			NSInteger m = MiaoParseMoodToken(parts[i]);
+			if (m >= 0) {
+				gForcedMood = m;
+				MiaoMoodWrite(m);
+				break;
+			}
+		}
 		MiaoActRun();
 	} else if ([cmd isEqualToString:@"adloop"]) {
 		MiaoActLoop();
@@ -3267,7 +3376,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.6 collega-pc");
+	MiaoLog(@"safari ready 0.14.7 mood-via-run");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3358,7 +3467,12 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	   aspetta solo il verdetto. */
 	MiaoAfter(runAt, ^{
 		MiaoToast(@"Run...");
-		MiaoSendCmd(@"run");
+		/* Passa il mood nel comando: unico canale affidabile verso Safari. */
+		NSString *runCmd = @"run";
+		if (gForcedMood >= 0 && gForcedMood <= 4) {
+			runCmd = [NSString stringWithFormat:@"run %@", MiaoMoodName(gForcedMood)];
+		}
+		MiaoSendCmd(runCmd);
 		/* Il passo successivo parte quando il run ha finito, non a un orario
 		   deciso prima: con i tempi fissi mandavamo `human` e `closeextra` su un
 		   run ancora in corso, e il ciclo dopo partiva su uno stato sporco. */
@@ -3416,7 +3530,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.6 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.7 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3517,7 +3631,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.6 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.7 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
