@@ -2846,6 +2846,30 @@ static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
 	});
 }
 
+static void MiaoRunTapHomeCard(NSInteger which) {
+	MiaoToast(@"Click video");
+	BOOL tapped = MiaoTapPt(MiaoPtThumb(which), @"video-1");
+	MiaoStepResult(@"tap-video", tapped,
+		[NSString stringWithFormat:@"card %ld %@", (long)which,
+			tapped ? @"ok" : @"rifiutato"]);
+	if (!tapped && which == 0) {
+		MiaoAfter(MiaoHumanDelay(0.6, 0.5), ^{ MiaoRunTapHomeCard(1); });
+		return;
+	}
+	if (!tapped) {
+		MiaoRunEnd(@"primo tap non partito", NO);
+		return;
+	}
+	MiaoAfter(MiaoHumanDelay(3.0, 1.4), ^{
+		if (!MiaoFrontIsVideo() && !MiaoForeignFront() && which == 0) {
+			MiaoStepResult(@"tap-video", NO, @"non aperto, riprovo card sotto");
+			MiaoRunTapHomeCard(1);
+			return;
+		}
+		MiaoRunAfterFirstTap();
+	});
+}
+
 /// 2-3) scroll a gesti, scelta del video, primo tap
 static void MiaoRunPickAndTap(void) {
 	if (MiaoInTabOverview() || !MiaoSiteIsFront()) {
@@ -2890,32 +2914,7 @@ static void MiaoRunPickAndTap(void) {
 		MiaoStepResult(@"scroll", YES,
 			[NSString stringWithFormat:@"mood=%ld passes=%ld", (long)gMood, (long)passes]);
 		MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{
-			__block void (^tapCard)(NSInteger) = nil;
-			tapCard = ^(NSInteger which) {
-				MiaoToast(@"Click video");
-				BOOL tapped = MiaoTapPt(MiaoPtThumb(which), @"video-1");
-				MiaoStepResult(@"tap-video", tapped,
-					[NSString stringWithFormat:@"card %ld %@", (long)which,
-						tapped ? @"ok" : @"rifiutato"]);
-				if (!tapped && which == 0) {
-					MiaoAfter(MiaoHumanDelay(0.6, 0.5), ^{ tapCard(1); });
-					return;
-				}
-				if (!tapped) {
-					MiaoRunEnd(@"primo tap non partito", NO);
-					return;
-				}
-				MiaoAfter(MiaoHumanDelay(3.0, 1.4), ^{
-					if (!MiaoFrontIsVideo() && !MiaoForeignFront() && which == 0) {
-						/* Ha toccato chip/titolo: seconda card visibile. */
-						MiaoStepResult(@"tap-video", NO, @"non aperto, riprovo card sotto");
-						tapCard(1);
-						return;
-					}
-					MiaoRunAfterFirstTap();
-				});
-			};
-			tapCard(0);
+			MiaoRunTapHomeCard(0);
 		});
 	});
 }
