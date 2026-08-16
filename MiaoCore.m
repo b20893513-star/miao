@@ -1454,6 +1454,9 @@ static NSString *const kMiaoJSFindAdTarget =
 	@"return 'NONE';"
 	@"})()";
 
+/// Click sul creativo (CTA / link) sulla pagina ads in primo piano.
+static void MiaoStepResult(NSString *name, BOOL ok, NSString *detail);
+
 static void MiaoTapAdOnFront(void (^done)(BOOL ok, NSString *detail)) {
 	if (!MiaoForeignFront()) {
 		if (done) done(NO, @"sito davanti, niente creativo");
