@@ -65,11 +65,17 @@ static void MPSend(NSString *line, const char *note) {
 
 - (UIButton *)personaButton:(NSString *)title mood:(NSString *)mood {
 	UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
-	[b setTitle:title forState:UIControlStateNormal];
-	b.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-	b.backgroundColor = [UIColor secondarySystemFillColor];
-	b.layer.cornerRadius = 8;
-	b.contentEdgeInsets = UIEdgeInsetsMake(8, 10, 8, 10);
+	UIButtonConfiguration *cfg = [UIButtonConfiguration grayButtonConfiguration];
+	cfg.title = title;
+	cfg.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+	cfg.contentInsets = NSDirectionalEdgeInsetsMake(8, 10, 8, 10);
+	cfg.titleTextAttributesTransformer =
+		^NSDictionary<NSAttributedStringKey, id> *(NSDictionary<NSAttributedStringKey, id> *incoming) {
+			NSMutableDictionary *m = [incoming mutableCopy] ?: [NSMutableDictionary dictionary];
+			m[NSFontAttributeName] = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+			return m;
+		};
+	b.configuration = cfg;
 	b.accessibilityIdentifier = mood;
 	[b addTarget:self action:@selector(startPersona:) forControlEvents:UIControlEventTouchUpInside];
 	return b;
