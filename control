@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.1
+Version: 0.14.2
 Architecture: iphoneos-arm64
-Description: Exit tab overview reliably; close ads with back first.
+Description: Close ads like Safari: tabs square, X, tap site card.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
