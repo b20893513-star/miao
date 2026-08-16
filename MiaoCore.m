@@ -164,9 +164,62 @@ static BOOL MiaoIsSiteURL(NSString *url) {
 	return [h isEqualToString:site] || [h hasSuffix:[@"." stringByAppendingString:site]];
 }
 
-/// Ritardo casuale: le pause identiche sono la firma piu' facile da riconoscere.
+/**
+ Ritardi e scelte che cambiano a ogni sessione.
+
+ Stessi base/spread a ogni passo = firma robotica. Qui il seed del report fa da
+ persona: un run e' curioso (scrolla di piu', video piu' in basso, resta
+ sull'ad), un altro e' frettoloso ma non istantaneo, un altro e' normale.
+ */
+static uint32_t gRng = 0;
+static NSInteger gMood = 1; // 0 curioso, 1 casual, 2 mirato
+
+static double MiaoRng(void) {
+	if (!gRng) gRng = arc4random() | 1;
+	gRng ^= gRng << 13;
+	gRng ^= gRng >> 17;
+	gRng ^= gRng << 5;
+	return (gRng & 0xffffff) / (double)0xffffff;
+}
+
+static void MiaoPersonaBegin(void) {
+	uint32_t s = MiaoReportSeed();
+	if (!s) s = arc4random();
+	gRng = s | 1;
+	gMood = (NSInteger)(s % 3);
+	MiaoLog([NSString stringWithFormat:@"persona mood=%ld seed=%08x", (long)gMood, s]);
+}
+
+/// Uniforme in [lo, hi].
+static NSTimeInterval MiaoBetween(NSTimeInterval lo, NSTimeInterval hi) {
+	if (hi <= lo) return lo;
+	return lo + MiaoRng() * (hi - lo);
+}
+
+/**
+ Pausa umana: non e' base+uniforme. Ha una coda lunga (a volte resta fermo a
+ "guardare") e ogni tanto una distrazione di 1-4 s. Senza coda le chiusure ads
+ sembrano a orologio.
+ */
 static NSTimeInterval MiaoHumanDelay(NSTimeInterval base, NSTimeInterval spread) {
-	return base + (double)arc4random_uniform((uint32_t)MAX(1, spread * 1000.0)) / 1000.0;
+	double u = MiaoRng();
+	/* skew: piu' spesso vicino a base, a volte molto di piu' */
+	double skew = u * u; // favorisce valori piccoli di u → pause medie, coda lunga se invertiamo
+	NSTimeInterval t = base * (0.75 + MiaoRng() * 0.55) + spread * (0.35 + skew * 0.9);
+	if (MiaoRng() < 0.14) t += MiaoBetween(1.1, 3.8); // si ferma a leggere / pensa
+	if (gMood == 0) t *= 1.25;      // curioso: piu' lento
+	else if (gMood == 2) t *= 0.92; // mirato: un filo piu' svelto, non robot
+	return MAX(0.15, t);
+}
+
+/// Tempo da stare sull'ad prima di chiudere: sempre irregolare, mai sotto i ~4 s.
+static NSTimeInterval MiaoAdDwell(void) {
+	NSTimeInterval t;
+	if (gMood == 0) t = MiaoBetween(5.5, 11.0);
+	else if (gMood == 2) t = MiaoBetween(4.0, 7.5);
+	else t = MiaoBetween(4.5, 9.0);
+	if (MiaoRng() < 0.2) t += MiaoBetween(2.0, 5.0);
+	return t;
 }
 
 static NSInteger MiaoCycles(void) {
@@ -444,7 +497,7 @@ static CGPoint MiaoWindowToScreen(CGPoint p) {
 #pragma mark - Scroll a gesti
 
 static double MiaoRnd(void) {
-	return (double)arc4random_uniform(10001) / 10000.0;
+	return MiaoRng();
 }
 
 static CGFloat MiaoNudge(CGFloat amount) {
@@ -1009,7 +1062,8 @@ static NSString *MiaoJSThumbAt(NSInteger idx) {
 		@"})()", (long)idx];
 }
 
-/// Sceglie un video a caso tra quelli raggiungibili con uno scroll plausibile.
+/// Sceglie un video a caso tra quelli raggiungibili, con preferenza diversa
+/// a seconda della persona della sessione (non sempre il primo vicino).
 static void MiaoPickThumb(void (^done)(NSInteger idx)) {
 	MiaoJS(kMiaoJSThumbList, ^(NSString *r) {
 		NSArray *parts = [r componentsSeparatedByString:@"|"];
@@ -1022,23 +1076,44 @@ static void MiaoPickThumb(void (^done)(NSInteger idx)) {
 		if (H < 120) H = 700;
 
 		NSMutableArray *near = [NSMutableArray array];
+		NSMutableArray *mid = [NSMutableArray array];
+		NSMutableArray *far = [NSMutableArray array];
 		NSMutableArray *all = [NSMutableArray array];
 		for (NSString *pair in [list componentsSeparatedByString:@","]) {
 			NSArray *kv = [pair componentsSeparatedByString:@":"];
 			if (kv.count < 2) continue;
 			[all addObject:kv[0]];
 			CGFloat top = [kv[1] doubleValue];
-			// entro un paio di schermate: nessuno scorre per venti secondi di fila
-			if (top > -H * 0.6 && top < H * 2.3) [near addObject:kv[0]];
+			if (top > -H * 0.4 && top < H * 0.85) [near addObject:kv[0]];
+			else if (top >= H * 0.85 && top < H * 1.8) [mid addObject:kv[0]];
+			else if (top >= H * 1.8 && top < H * 3.2) [far addObject:kv[0]];
 		}
-		NSArray *pool = near.count ? near : all;
+
+		NSArray *pool = nil;
+		if (gMood == 0) {
+			/* curioso: preferisce piu' in basso, a volte cambia idea */
+			pool = far.count ? far : (mid.count ? mid : near);
+			if (MiaoRng() < 0.35 && mid.count) pool = mid;
+			if (MiaoRng() < 0.2 && near.count) pool = near;
+		} else if (gMood == 2) {
+			/* mirato: prende qualcosa di gia' in vista */
+			pool = near.count ? near : (mid.count ? mid : all);
+			if (MiaoRng() < 0.25 && mid.count) pool = mid;
+		} else {
+			/* casual: mescola le fasce */
+			double u = MiaoRng();
+			if (u < 0.45) pool = near.count ? near : all;
+			else if (u < 0.8) pool = mid.count ? mid : (near.count ? near : all);
+			else pool = far.count ? far : (mid.count ? mid : all);
+		}
+		if (!pool.count) pool = all;
 		if (!pool.count) {
 			done(-1);
 			return;
 		}
-		NSString *pick = pool[arc4random_uniform((uint32_t)pool.count)];
-		MiaoLog([NSString stringWithFormat:@"thumb pick %@ su %lu (%lu vicini)",
-			pick, (unsigned long)all.count, (unsigned long)near.count]);
+		NSString *pick = pool[(NSUInteger)(MiaoRng() * pool.count) % pool.count];
+		MiaoLog([NSString stringWithFormat:@"thumb pick %@ mood=%ld near=%lu mid=%lu far=%lu",
+			pick, (long)gMood, (unsigned long)near.count, (unsigned long)mid.count, (unsigned long)far.count]);
 		done([pick integerValue]);
 	});
 }
@@ -1720,7 +1795,8 @@ static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
 		return;
 	}
 
-	MiaoAfter(MiaoHumanDelay(1.1, 0.7), ^{
+	/* La panoramica non e' istantanea: si aspetta che le card si sistemino. */
+	MiaoAfter(MiaoHumanDelay(1.4, 1.2), ^{
 		MiaoAXNode *card = MiaoSiteCard();
 		NSArray<MiaoAXNode *> *closers = MiaoAXFindAll(MiaoNamesClose());
 		MiaoLog([NSString stringWithFormat:@"griglia: sito=%@ chiusure=%lu",
@@ -1744,9 +1820,12 @@ static void MiaoCloseAdTabNative(void (^done)(BOOL ok)) {
 			return;
 		}
 
-		MiaoTapNode(adClose, @"chiudi ad");
-		MiaoAfter(MiaoHumanDelay(0.9, 0.6), ^{
-			MiaoLeaveTabGrid(0, ^(BOOL onSite) { if (done) done(onSite); });
+		/* piccolo "guarda la scheda" prima della X */
+		MiaoAfter(MiaoBetween(0.35, 1.1), ^{
+			MiaoTapNode(adClose, @"chiudi ad");
+			MiaoAfter(MiaoHumanDelay(1.1, 1.0), ^{
+				MiaoLeaveTabGrid(0, ^(BOOL onSite) { if (done) done(onSite); });
+			});
 		});
 	});
 }
@@ -2236,6 +2315,54 @@ static void MiaoRunSecondTap(void) {
 	});
 }
 
+/**
+ Resta sull'ad come una persona: guarda, magari scrolla un po', esita, poi chiude.
+
+ La chiusura a orologio (2s fissi) e' quello che faceva sembrare robotiche le
+ sessioni dopo la prima. Il tempo totale viene da MiaoAdDwell e si spezza in
+ pezzi irregolari.
+ */
+static void MiaoLingerOnAd(void (^done)(void)) {
+	NSTimeInterval budget = MiaoAdDwell();
+	NSTimeInterval t0 = MiaoBetween(1.2, MIN(3.5, budget * 0.45));
+	MiaoLog([NSString stringWithFormat:@"ad dwell total=%.1fs first=%.1fs mood=%ld",
+		budget, t0, (long)gMood]);
+	MiaoToast([NSString stringWithFormat:@"Ads… %.0fs", budget]);
+
+	MiaoAfter(t0, ^{
+		void (^finish)(void) = ^{
+			NSTimeInterval left = MAX(1.2, budget - t0);
+			NSTimeInterval hesitate = MiaoBetween(0.8, MIN(3.2, left * 0.55));
+			MiaoAfter(hesitate, ^{ if (done) done(); });
+		};
+
+		CGRect area;
+		BOOL canScroll = MiaoContentArea(&area);
+		BOOL wantSecond = canScroll && (gMood == 0 || MiaoRng() < 0.55);
+
+		if (!canScroll) {
+			finish();
+			return;
+		}
+
+		CGFloat dy1 = 70 + (CGFloat)(MiaoRng() * 200);
+		if (MiaoRng() < 0.3) dy1 = -dy1;
+		MiaoGestureScroll(dy1, ^{
+			if (!wantSecond) {
+				MiaoAfter(MiaoBetween(0.6, 1.8), finish);
+				return;
+			}
+			MiaoAfter(MiaoBetween(0.7, 2.0), ^{
+				CGFloat dy2 = 60 + (CGFloat)(MiaoRng() * 160);
+				if (MiaoRng() < 0.4) dy2 = -dy2;
+				MiaoGestureScroll(dy2, ^{
+					MiaoAfter(MiaoBetween(0.6, 1.8), finish);
+				});
+			});
+		});
+	});
+}
+
 /// 4) resta sull'ad il tempo di una persona, chiudi la scheda, torna al sito
 static void MiaoRunAfterFirstTap(void) {
 	NSInteger ads = MiaoForeignTabCount();
@@ -2254,36 +2381,45 @@ static void MiaoRunAfterFirstTap(void) {
 	}
 	MiaoStepResult(@"popunder", YES, [NSString stringWithFormat:@"%ld pagine esterne", (long)ads]);
 	MiaoToast([NSString stringWithFormat:@"Ads +%ld", (long)ads]);
-	/* Chi finisce su un popunder ci guarda un po' prima di chiuderlo: tempo
-	   sull'ad + piccolo scroll (solo se la pagina ads e' davvero piena). */
-	MiaoAfter(MiaoHumanDelay(2.2, 1.6), ^{
-		void (^chiudi)(void) = ^{
-			MiaoAfter(MiaoHumanDelay(2.0, 2.2), ^{
-				MiaoToast(@"Chiudo ads");
-				MiaoCloseAdsHuman(^(BOOL front) {
-					(void)front;
-					/* front=YES non basta: dobbiamo essere FUORI dalla panoramica */
-					MiaoEnsureBrowsing(^(BOOL browsing) {
-						BOOL ok = browsing && MiaoSiteIsFront() && !MiaoInTabOverview();
-						MiaoStepResult(@"chiudi-ads", ok,
-							[NSString stringWithFormat:@"estranee=%ld overview=%d front=%d",
-								(long)MiaoForeignTabCount(),
-								MiaoInTabOverview() ? 1 : 0, front ? 1 : 0]);
-						if (!ok) {
-							MiaoRunEnd(@"non torno sulla pagina (pannelli?)", NO);
-							return;
-						}
-						MiaoAfter(MiaoHumanDelay(0.8, 0.7), ^{ MiaoRunSecondTap(); });
-					});
-				});
+
+	MiaoLingerOnAd(^{
+		MiaoToast(@"Chiudo ads");
+		MiaoCloseAdsHuman(^(BOOL front) {
+			(void)front;
+			MiaoEnsureBrowsing(^(BOOL browsing) {
+				BOOL ok = browsing && MiaoSiteIsFront() && !MiaoInTabOverview();
+				MiaoStepResult(@"chiudi-ads", ok,
+					[NSString stringWithFormat:@"estranee=%ld overview=%d front=%d",
+						(long)MiaoForeignTabCount(),
+						MiaoInTabOverview() ? 1 : 0, front ? 1 : 0]);
+				if (!ok) {
+					MiaoRunEnd(@"non torno sulla pagina (pannelli?)", NO);
+					return;
+				}
+				/* dopo la chiusura ci si riprende: non si ritappa subito */
+				MiaoAfter(MiaoHumanDelay(1.2, 1.8), ^{ MiaoRunSecondTap(); });
 			});
-		};
-		CGRect area;
-		if (MiaoContentArea(&area)) {
-			MiaoGestureScroll(90 + (CGFloat)arc4random_uniform(220), chiudi);
-		} else {
-			chiudi();
-		}
+		});
+	});
+}
+
+/**
+ Scroll esplorativo prima di scegliere: 1-3 passate, a volte un po' indietro.
+ Cosi' due sessioni non partono con lo stesso gesto unico.
+ */
+static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
+	if (left <= 0) {
+		if (done) done();
+		return;
+	}
+	CGFloat dy = 160 + (CGFloat)(MiaoRng() * 340);
+	if (gMood == 2) dy = 120 + (CGFloat)(MiaoRng() * 200);
+	if (gMood == 0) dy = 220 + (CGFloat)(MiaoRng() * 380);
+	if (MiaoRng() < 0.18) dy = -(80 + (CGFloat)(MiaoRng() * 140));
+	MiaoGestureScroll(dy, ^{
+		MiaoAfter(MiaoHumanDelay(0.7, 1.4), ^{
+			MiaoExploreHome(left - 1, done);
+		});
 	});
 }
 
@@ -2300,13 +2436,16 @@ static void MiaoRunPickAndTap(void) {
 		});
 		return;
 	}
-	MiaoToast(@"Scroll...");
-	// una passata esplorativa, come chi arriva sulla home e guarda cosa c'e'
-	MiaoGestureScroll(200 + (CGFloat)arc4random_uniform(300), ^{
+	NSInteger passes = (gMood == 0) ? (2 + (MiaoRng() < 0.5 ? 1 : 0))
+					 : (gMood == 2) ? 1
+					 : (1 + (MiaoRng() < 0.55 ? 1 : 0));
+	MiaoToast([NSString stringWithFormat:@"Scroll x%ld…", (long)passes]);
+	MiaoExploreHome(passes, ^{
 		MiaoJSFront(kMiaoJSScrollY, ^(NSString *y) {
-			MiaoStepResult(@"scroll", [y integerValue] > 40,
-				[NSString stringWithFormat:@"y=%@", y ?: @"?"]);
-			MiaoAfter(MiaoHumanDelay(0.9, 1.6), ^{
+			MiaoStepResult(@"scroll", [y integerValue] > 20,
+				[NSString stringWithFormat:@"y=%@ mood=%ld passes=%ld",
+					y ?: @"?", (long)gMood, (long)passes]);
+			MiaoAfter(MiaoHumanDelay(0.8, 1.8), ^{
 				MiaoInstallProbe(nil);
 				MiaoPickThumb(^(NSInteger idx) {
 					if (idx < 0) {
@@ -2316,15 +2455,15 @@ static void MiaoRunPickAndTap(void) {
 					}
 					gRunThumb = idx;
 					MiaoStepResult(@"scelta-video", YES,
-						[NSString stringWithFormat:@"indice %ld", (long)idx]);
+						[NSString stringWithFormat:@"indice %ld mood=%ld", (long)idx, (long)gMood]);
 					MiaoScrollToThumb(idx, 0, ^(BOOL ok, NSString *raw) {
 						if (!ok) {
 							MiaoStepResult(@"scroll-video", NO, raw ?: @"?");
 							MiaoRunEnd([NSString stringWithFormat:@"video %ld non raggiunto (%@)", (long)idx, raw], NO);
 							return;
 						}
-						// si guarda la miniatura prima di toccarla
-						MiaoAfter(MiaoHumanDelay(0.6, 1.3), ^{
+						/* guarda la miniatura: a volte di piu', a volte meno */
+						MiaoAfter(MiaoHumanDelay(0.7, 1.8), ^{
 							MiaoToast(@"Click video");
 							MiaoTapThumb(idx, @"video-1", ^(BOOL tapped) {
 								MiaoStepResult(@"tap-video", tapped, tapped ? @"" : @"tap rifiutato");
@@ -2332,7 +2471,7 @@ static void MiaoRunPickAndTap(void) {
 									MiaoRunEnd(@"primo tap non partito", NO);
 									return;
 								}
-								MiaoAfter(MiaoHumanDelay(3.2, 1.5), ^{ MiaoRunAfterFirstTap(); });
+								MiaoAfter(MiaoHumanDelay(2.8, 2.2), ^{ MiaoRunAfterFirstTap(); });
 							});
 						});
 					});
@@ -2378,6 +2517,7 @@ static void MiaoActRun(void) {
 	gRunThumb = -1;
 	MiaoToast(@"Run...");
 	MiaoReportBegin(@"run", 0);
+	MiaoPersonaBegin();
 	if (MiaoReportLastWriteError().length) {
 		MiaoLog([NSString stringWithFormat:@"report write ERR %@", MiaoReportLastWriteError()]);
 		MiaoToast(@"Report: scrittura fallita");
@@ -2504,7 +2644,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.11.2 esiti");
+	MiaoLog(@"safari ready 0.11.3 esiti");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -2654,7 +2794,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.11.2 x%ld", (long)n]);
+	MiaoLog([NSString stringWithFormat:@"session 0.11.3 x%ld", (long)n]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld...", (long)n]);
 	/* Traccia batch da SpringBoard: cosi' il pannello vede qualcosa anche se
 	   Safari non riesce ancora a scrivere gli step del singolo run. */
@@ -2737,7 +2877,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.11.2 - app o 3x Vol");
+		MiaoToast(@"Miao 0.11.3 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
