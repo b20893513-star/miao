@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.11.3
+Version: 0.11.4
 Architecture: iphoneos-arm64
-Description: Per-session persona: varied video picks, human ad dwell, non-robotic closes.
+Description: If content video already playing, finish without waiting for skip.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

@@ -2129,8 +2129,14 @@ static void MiaoStepResult(NSString *name, BOOL ok, NSString *detail) {
 }
 
 static NSString *const kMiaoJSVideoState =
-	@"(function(){var v=document.querySelector('video[data-nox-content],video');"
-	@"return (v?(v.paused?'paused':'playing'):'novideo')+'|'+location.pathname;})()";
+	@"(function(){"
+	@"var v=document.querySelector('video[data-nox-content]')"
+	@"||document.querySelector('video:not([src*=\"ad\"]):not([id*=\"ad\"])')"
+	@"||document.querySelector('video');"
+	@"if(!v) return 'novideo|'+location.pathname+'|0|0';"
+	@"var st=v.paused?'paused':'playing';"
+	@"return st+'|'+location.pathname+'|'+Math.round(v.currentTime||0)+'|'+Math.round(v.duration||0);"
+	@"})()";
 
 /**
  Riporta Safari a uno stato noto: nessuna pagina esterna aperta, sito davanti.
@@ -2171,17 +2177,22 @@ static void MiaoRunEnd(NSString *msg, BOOL ok) {
 }
 
 /**
- 6) tap sullo skip appena si sblocca.
+ 6) skip se c'e', altrimenti basta che il video stia playando.
 
- Il passo e' riuscito solo se il video parte: "ho tappato" non basta, perche' il
- tap puo' essere stato rifiutato (pagina esterna davanti) e perche' il countdown
- di una scheda in secondo piano non avanza mai — WebKit sospende timer e
- requestAnimationFrame quando la scheda non e' visibile.
+ Prima si aspettava lo skip anche quando non c'era (NONE) o quando il contenuto
+ era gia' partito: toast "Attendo skip" a vuoto mentre il video andava da un po'.
  */
 static void MiaoRunWaitSkip(void) {
 	if (gRunSkipTries++ > 40) {
-		MiaoStepResult(@"skip", NO, @"mai sbloccato in 40 letture");
-		MiaoRunEnd(@"skip mai sbloccato", NO);
+		MiaoJSFront(kMiaoJSVideoState, ^(NSString *st) {
+			if ([st hasPrefix:@"playing"]) {
+				MiaoStepResult(@"skip", YES, [NSString stringWithFormat:@"timeout ma playing %@", st]);
+				MiaoRunEnd([NSString stringWithFormat:@"video in riproduzione (%@)", st], YES);
+				return;
+			}
+			MiaoStepResult(@"skip", NO, @"mai sbloccato in 40 letture");
+			MiaoRunEnd(@"skip mai sbloccato", NO);
+		});
 		return;
 	}
 	// aspettare lo skip di una pagina che non si vede e' tempo buttato
@@ -2197,49 +2208,85 @@ static void MiaoRunWaitSkip(void) {
 		return;
 	}
 
-	MiaoJSFront(kMiaoJSFindSkip, ^(NSString *r) {
-		BOOL ready = [r hasPrefix:@"READY|"];
-		BOOL waiting = [r hasPrefix:@"WAIT|"];
-
-		// dopo 25 tentativi prendiamo comunque quello che c'e'
-		BOOL force = waiting && gRunSkipTries > 25;
-		if (!ready && !force) {
-			if (gRunSkipTries % 5 == 0)
-				MiaoToast([NSString stringWithFormat:@"Attendo skip (%ld)", (long)gRunSkipTries]);
-			MiaoAfter(MiaoHumanDelay(0.9, 0.4), ^{ MiaoRunWaitSkip(); });
+	/* Prima lo stato del video: se sta gia' andando non cerchiamo lo skip. */
+	MiaoJSFront(kMiaoJSVideoState, ^(NSString *st) {
+		NSArray *sp = [st componentsSeparatedByString:@"|"];
+		NSInteger cur = sp.count > 2 ? [sp[2] integerValue] : 0;
+		if ([st hasPrefix:@"playing"] && (cur >= 1 || gRunSkipTries >= 3)) {
+			MiaoStepResult(@"skip", YES,
+				[NSString stringWithFormat:@"gia playing, skip non serve (%@)", st]);
+			MiaoToast(@"Video ok");
+			MiaoRunEnd([NSString stringWithFormat:@"video in riproduzione (%@)", st], YES);
 			return;
 		}
 
-		NSArray *parts = [r componentsSeparatedByString:@"|"];
-		CGPoint vp = parts.count > 1 ? MiaoParseXY(parts[1]) : CGPointZero;
-		if (vp.x < 1 && vp.y < 1) {
-			MiaoAfter(MiaoHumanDelay(0.9, 0.4), ^{ MiaoRunWaitSkip(); });
-			return;
-		}
-		MiaoAck([NSString stringWithFormat:@"skip %@ (%@)", r, force ? @"forzato" : @"pronto"]);
-		MiaoToast(@"Skip!");
+		MiaoJSFront(kMiaoJSFindSkip, ^(NSString *r) {
+			BOOL ready = [r hasPrefix:@"READY|"];
+			BOOL waiting = [r hasPrefix:@"WAIT|"];
+			BOOL none = !r.length || [r hasPrefix:@"NONE"];
 
-		BOOL tapped = MiaoTrustedTapViewport(vp, @"skip");
-		if (!tapped) {
-			MiaoStepResult(@"skip-tap", NO, [NSString stringWithFormat:@"rifiutato (%@)", r]);
-			MiaoAfter(MiaoHumanDelay(1.0, 0.8), ^{ MiaoRunWaitSkip(); });
-			return;
-		}
-
-		MiaoAfter(MiaoHumanDelay(2.0, 1.0), ^{
-			MiaoJSFront(kMiaoJSVideoState, ^(NSString *st) {
-				BOOL playing = [st hasPrefix:@"playing"];
-				MiaoStepResult(@"skip", playing, st ?: @"?");
-				if (playing) {
+			/* Niente pulsante skip: o il preroll non c'e', o e' gia' finito. */
+			if (none) {
+				if ([st hasPrefix:@"playing"]) {
+					MiaoStepResult(@"skip", YES, [NSString stringWithFormat:@"NONE + %@", st]);
+					MiaoToast(@"Video ok");
 					MiaoRunEnd([NSString stringWithFormat:@"video in riproduzione (%@)", st], YES);
 					return;
 				}
-				// tappato ma il video non e' partito: puo' essere ancora l'overlay
-				if (gRunSkipTries <= 34) {
-					MiaoAfter(MiaoHumanDelay(1.2, 0.8), ^{ MiaoRunWaitSkip(); });
-					return;
-				}
-				MiaoRunEnd([NSString stringWithFormat:@"skip tappato ma video %@", st ?: @"?"], NO);
+				if (gRunSkipTries % 5 == 0)
+					MiaoToast([NSString stringWithFormat:@"Video… (%ld)", (long)gRunSkipTries]);
+				MiaoAfter(MiaoHumanDelay(0.9, 0.5), ^{ MiaoRunWaitSkip(); });
+				return;
+			}
+
+			/* Skip in countdown ma il contenuto sta gia' playando sotto: non aspettare. */
+			if (waiting && [st hasPrefix:@"playing"] && cur >= 1) {
+				MiaoStepResult(@"skip", YES,
+					[NSString stringWithFormat:@"WAIT ignorato, playing %@", st]);
+				MiaoToast(@"Video ok");
+				MiaoRunEnd([NSString stringWithFormat:@"video in riproduzione (%@)", st], YES);
+				return;
+			}
+
+			// dopo 25 tentativi prendiamo comunque quello che c'e'
+			BOOL force = waiting && gRunSkipTries > 25;
+			if (!ready && !force) {
+				if (gRunSkipTries % 5 == 0)
+					MiaoToast([NSString stringWithFormat:@"Attendo skip (%ld)", (long)gRunSkipTries]);
+				MiaoAfter(MiaoHumanDelay(0.9, 0.4), ^{ MiaoRunWaitSkip(); });
+				return;
+			}
+
+			NSArray *parts = [r componentsSeparatedByString:@"|"];
+			CGPoint vp = parts.count > 1 ? MiaoParseXY(parts[1]) : CGPointZero;
+			if (vp.x < 1 && vp.y < 1) {
+				MiaoAfter(MiaoHumanDelay(0.9, 0.4), ^{ MiaoRunWaitSkip(); });
+				return;
+			}
+			MiaoAck([NSString stringWithFormat:@"skip %@ (%@)", r, force ? @"forzato" : @"pronto"]);
+			MiaoToast(@"Skip!");
+
+			BOOL tapped = MiaoTrustedTapViewport(vp, @"skip");
+			if (!tapped) {
+				MiaoStepResult(@"skip-tap", NO, [NSString stringWithFormat:@"rifiutato (%@)", r]);
+				MiaoAfter(MiaoHumanDelay(1.0, 0.8), ^{ MiaoRunWaitSkip(); });
+				return;
+			}
+
+			MiaoAfter(MiaoHumanDelay(2.0, 1.0), ^{
+				MiaoJSFront(kMiaoJSVideoState, ^(NSString *st2) {
+					BOOL playing = [st2 hasPrefix:@"playing"];
+					MiaoStepResult(@"skip", playing, st2 ?: @"?");
+					if (playing) {
+						MiaoRunEnd([NSString stringWithFormat:@"video in riproduzione (%@)", st2], YES);
+						return;
+					}
+					if (gRunSkipTries <= 34) {
+						MiaoAfter(MiaoHumanDelay(1.2, 0.8), ^{ MiaoRunWaitSkip(); });
+						return;
+					}
+					MiaoRunEnd([NSString stringWithFormat:@"skip tappato ma video %@", st2 ?: @"?"], NO);
+				});
 			});
 		});
 	});
@@ -2644,7 +2691,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.11.3 esiti");
+	MiaoLog(@"safari ready 0.11.4 esiti");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -2794,7 +2841,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.11.3 x%ld", (long)n]);
+	MiaoLog([NSString stringWithFormat:@"session 0.11.4 x%ld", (long)n]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld...", (long)n]);
 	/* Traccia batch da SpringBoard: cosi' il pannello vede qualcosa anche se
 	   Safari non riesce ancora a scrivere gli step del singolo run. */
@@ -2877,7 +2924,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.11.3 - app o 3x Vol");
+		MiaoToast(@"Miao 0.11.4 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
