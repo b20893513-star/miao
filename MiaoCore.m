@@ -1945,6 +1945,8 @@ static void MiaoRunEnd(NSString *msg, BOOL ok) {
 	   accanto al verdetto, non un dettaglio da perdere. */
 	MiaoRunTeardown(^{
 		MiaoReportEnd(ok, msg);
+		if (MiaoReportLastWriteError().length)
+			MiaoLog([NSString stringWithFormat:@"report end write ERR %@", MiaoReportLastWriteError()]);
 		// SpringBoard aspetta questo per passare al passo successivo, invece di
 		// tirare a indovinare quanto durera' il run
 		notify_post("com.noxlab.miao.runend");
@@ -2186,6 +2188,12 @@ static void MiaoActRun(void) {
 	gRunThumb = -1;
 	MiaoToast(@"Run...");
 	MiaoReportBegin(@"run", 0);
+	if (MiaoReportLastWriteError().length) {
+		MiaoLog([NSString stringWithFormat:@"report write ERR %@", MiaoReportLastWriteError()]);
+		MiaoToast(@"Report: scrittura fallita");
+	} else {
+		MiaoLog([NSString stringWithFormat:@"report begin sid=%@", MiaoReportSid() ?: @"?"]);
+	}
 
 	MiaoEnsureSiteFront(^(BOOL front) {
 		MiaoStepResult(@"sito-davanti", front, MiaoWebViewURL(MiaoFrontWebView()));
@@ -2306,7 +2314,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.11.0 esiti");
+	MiaoLog(@"safari ready 0.11.1 esiti");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -2454,9 +2462,15 @@ static void MiaoSessionRun(NSInteger cycles) {
 	}
 	gSessionBusy = YES;
 	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
+	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.11.0 x%ld", (long)n]);
+	MiaoLog([NSString stringWithFormat:@"session 0.11.1 x%ld", (long)n]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld...", (long)n]);
+	/* Traccia batch da SpringBoard: cosi' il pannello vede qualcosa anche se
+	   Safari non riesce ancora a scrivere gli step del singolo run. */
+	MiaoReportBegin(@"batch", 0);
+	MiaoReportStep(@"batch-start", YES, [NSString stringWithFormat:@"x%ld", (long)n]);
+	MiaoReportEnd(YES, [NSString stringWithFormat:@"avviato x%ld", (long)n]);
 	MiaoStep(0, n, ++gSessionGen);
 }
 
@@ -2480,7 +2494,14 @@ static void MiaoStartSBCommands(void) {
 		(void)t;
 		NSString *raw = [NSString stringWithContentsOfFile:kSbCmdPath
 												 encoding:NSUTF8StringEncoding error:nil];
+		if (!raw.length) {
+			raw = [NSString stringWithContentsOfFile:
+				@"/var/mobile/Library/Preferences/com.noxlab.miao.sbcmd.txt"
+				encoding:NSUTF8StringEncoding error:nil];
+		}
 		[[NSFileManager defaultManager] removeItemAtPath:kSbCmdPath error:nil];
+		[[NSFileManager defaultManager] removeItemAtPath:
+			@"/var/mobile/Library/Preferences/com.noxlab.miao.sbcmd.txt" error:nil];
 		NSString *line = [[raw componentsSeparatedByCharactersInSet:
 			[NSCharacterSet newlineCharacterSet]] firstObject] ?: @"";
 		NSArray *parts = [line componentsSeparatedByString:@" "];
@@ -2524,9 +2545,11 @@ void MiaoBoot(void) {
 	gBootDone = YES;
 	MiaoLog([NSString stringWithFormat:@"boot %@", NSBundle.mainBundle.bundleIdentifier ?: @"?"]);
 	if (MiaoIsSB()) {
+		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.11.0 - app o 3x Vol");
+		MiaoToast(@"Miao 0.11.1 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
+		MiaoReportEnsure();
 		MiaoStartSafari();
 	}
 }

@@ -10,23 +10,70 @@ chown -R 501:501 "$SSH_DIR" 2>/dev/null || true
 chmod 700 "$SSH_DIR" 2>/dev/null || true
 chmod 600 "$AK" 2>/dev/null || true
 
-# Il tweak e l'app scrivono qui: se la cartella non esiste il report resta vuoto
-mkdir -p /var/mobile/Documents 2>/dev/null || true
-touch /var/mobile/Documents/miao-events.jsonl 2>/dev/null || true
-chown 501:501 /var/mobile/Documents/miao-events.jsonl 2>/dev/null || true
-chmod 666 /var/mobile/Documents/miao-events.jsonl 2>/dev/null || true
+# Cartelle condivise tweak <-> pannello
+DOC="/var/mobile/Documents"
+PREF="/var/mobile/Library/Preferences"
+JB_MIAO="/var/jb/var/mobile/Library/Miao"
+mkdir -p "$DOC" "$PREF" 2>/dev/null || true
+[ -d /var/jb ] && mkdir -p "$JB_MIAO" 2>/dev/null || true
 
-# L'icona del pannello compare solo dopo che SpringBoard ha riletto le app
+for f in \
+  "$DOC/miao-events.jsonl" \
+  "$PREF/com.noxlab.miao.events.jsonl" \
+  "$JB_MIAO/events.jsonl"
+do
+  [ -z "$f" ] && continue
+  dir=$(dirname "$f")
+  [ -d "$dir" ] || continue
+  touch "$f" 2>/dev/null || true
+  chown 501:501 "$f" 2>/dev/null || true
+  chmod 666 "$f" 2>/dev/null || true
+done
+chmod 777 "$DOC" 2>/dev/null || true
+chmod 777 "$PREF" 2>/dev/null || true
+[ -d "$JB_MIAO" ] && chmod 777 "$JB_MIAO" 2>/dev/null || true
+
+# Pannello: path rootless Dopamine
 APP="/var/jb/Applications/MiaoPanel.app"
 [ -d "$APP" ] || APP="/Applications/MiaoPanel.app"
+BIN="$APP/MiaoPanel"
+ENT="$APP/entitlements.plist"
+[ -f "$ENT" ] || ENT="$APP/Resources/entitlements.plist"
+
+# Se Theos ha messo le entitlements nel .app, ri-firma qui: dpkg a volte
+# lascia il binario senza no-sandbox e l'app non legge i file del tweak.
+if [ -x "$BIN" ] && command -v ldid >/dev/null 2>&1; then
+  if [ -f "$ENT" ]; then
+    ldid -S"$ENT" "$BIN" 2>/dev/null || true
+  else
+    # entitlements minime inline se il file non e' nel bundle
+    cat > /tmp/miao-panel.ent <<'MIAPENT'
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>platform-application</key><true/>
+<key>com.apple.private.security.no-container</key><true/>
+<key>com.apple.private.security.no-sandbox</key><true/>
+<key>com.apple.private.security.container-required</key><false/>
+</dict></plist>
+MIAPENT
+    ldid -S/tmp/miao-panel.ent "$BIN" 2>/dev/null || true
+    rm -f /tmp/miao-panel.ent
+  fi
+fi
+
 if command -v uicache >/dev/null 2>&1; then
   uicache -p "$APP" 2>/dev/null || uicache -a 2>/dev/null || true
 fi
 
 {
-  echo "miao 0.11.0 postinst $(date)"
+  echo "miao 0.11.1 postinst $(date)"
   ls -la /var/jb/Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || ls -la /Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || true
   ls -ld "$APP" 2>/dev/null || true
+  ls -la "$DOC/miao-events.jsonl" "$PREF/com.noxlab.miao.events.jsonl" 2>/dev/null || true
+  if command -v ldid >/dev/null 2>&1 && [ -x "$BIN" ]; then
+    echo "=== entitlements MiaoPanel ==="
+    ldid -e "$BIN" 2>/dev/null || true
+  fi
 } > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
-echo "Miao 0.11.0 — Userspace Reboot, poi apri l'app Miao"
+echo "Miao 0.11.1 — Userspace Reboot, poi apri l'app Miao"
 exit 0

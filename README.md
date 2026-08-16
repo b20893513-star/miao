@@ -1,4 +1,4 @@
-# Miao 0.11.0
+# Miao 0.11.1
 
 Tutto quello che il sito puo' vedere arriva da un dito: `UITouch` sintetizzate
 dentro Safari e mandate a `sendEvent:`, quindi hit-test, gesture recognizer e
@@ -6,17 +6,23 @@ web content le trattano come touch reali. Il JavaScript resta solo dove non
 tocca nulla: leggere posizioni e stato.
 
 Da questa versione ogni passo del run ha un **esito misurato**, i risultati
-finiscono in un file di eventi e si guardano dall'**app Miao** sulla home.
+finiscono in file di eventi (Documents + Preferences + path rootless) e si
+guardano dall'**app Miao** sulla home.
 
 ## Pannello (app Miao)
 Icona sulla home, nessun SSH. Mostra le ultime 30 sessioni: per ognuna ora,
 esito, durata, numero di passi, quanti falliti e il seed; toccandola si aprono i
 passi con esito, durata in millisecondi e dettaglio. In basso: **Avvia** (1, 3,
-5, 10, 25 o 50 sessioni), **Stop**, **Pulisci**.
+5, 10, 25 o 50 sessioni), **Stop**, **Diagnosi**, **Pulisci**.
 
-I comandi vanno a SpringBoard su `miao-sbcmd.txt` + notifica, separati dal file
-che consuma Safari. I dati restano sul dispositivo: alle pagine visitate non
-viene aggiunto nulla.
+L'app e' firmata con `no-sandbox` / `no-container`: senza quello non legge i
+file che scrive il tweak. Il `postinst` ri-applica le entitlements con `ldid`
+dopo l'installazione. Se la lista e' vuota, **Diagnosi** dice se il problema e'
+lettura, scrittura o file vuoto.
+
+I comandi vanno a SpringBoard su `miao-sbcmd.txt` (e un fallback in Preferences)
++ notifica. I dati restano sul dispositivo: alle pagine visitate non viene
+aggiunto nulla.
 
 ## Esiti per passo
 Ogni passo scrive una riga in `/var/mobile/Documents/miao-events.jsonl`:
@@ -155,10 +161,13 @@ Dal pannello: `session N` e `stop` (notifiche `com.noxlab.miao.session` e
 ## File
 | percorso | cosa contiene |
 |---|---|
-| `miao-events.jsonl` | esiti per passo, li legge il pannello |
+| `Documents/miao-events.jsonl` | esiti per passo (primario) |
+| `Preferences/com.noxlab.miao.events.jsonl` | stesso log, fallback |
+| `miao-events.err` | ultimo errore di scrittura eventi |
 | `miao-loaded.txt` | log testuale della sessione corrente |
 | `miao-ack.txt` | messaggi lunghi (dump webview, dump accessibility) |
 | `miao-cal.plist` | correzione delle coordinate misurata da `calib` |
+| `miao-postinst.txt` | esito install + entitlements del pannello |
 
 ## Install
 Userspace Reboot dopo update. L'icona del pannello compare dopo `uicache`, che

@@ -3,13 +3,20 @@
 #import <notify.h>
 
 static NSString *const kMPSbCmdPath = @"/var/mobile/Documents/miao-sbcmd.txt";
+static NSString *const kMPSbCmdFallback =
+	@"/var/mobile/Library/Preferences/com.noxlab.miao.sbcmd.txt";
 
 /// I comandi vanno a SpringBoard, che e' l'unico che puo' aprire Safari e
 /// scandire la sessione. Stesso bus del tweak: file piu' notifica.
 static void MPSend(NSString *line, const char *note) {
 	NSString *body = [NSString stringWithFormat:@"%@\n%.0f", line,
 		[[NSDate date] timeIntervalSince1970]];
-	[body writeToFile:kMPSbCmdPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	for (NSString *path in @[ kMPSbCmdPath, kMPSbCmdFallback ]) {
+		NSString *dir = [path stringByDeletingLastPathComponent];
+		[[NSFileManager defaultManager] createDirectoryAtPath:dir
+								  withIntermediateDirectories:YES attributes:nil error:nil];
+		[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	}
 	notify_post(note);
 }
 
@@ -21,6 +28,7 @@ static void MPSend(NSString *line, const char *note) {
 @property (nonatomic, strong) NSArray<MiaoRunReport *> *sessions;
 @property (nonatomic, strong) NSMutableSet<NSString *> *expanded;
 @property (nonatomic, strong) NSTimer *timer;
+@property (nonatomic, copy) NSString *diagLine;
 @end
 
 @implementation MPRootViewController
@@ -30,6 +38,7 @@ static void MPSend(NSString *line, const char *note) {
 	self.title = @"Miao";
 	self.expanded = [NSMutableSet set];
 	self.sessions = @[];
+	self.diagLine = @"";
 
 	self.table = [[UITableView alloc] initWithFrame:self.view.bounds
 											  style:UITableViewStyleInsetGrouped];
@@ -54,12 +63,12 @@ static void MPSend(NSString *line, const char *note) {
 }
 
 - (void)buildHeader {
-	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 96)];
+	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 128)];
 
 	self.status = [UILabel new];
-	self.status.font = [UIFont monospacedDigitSystemFontOfSize:14 weight:UIFontWeightRegular];
+	self.status.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
 	self.status.textColor = UIColor.secondaryLabelColor;
-	self.status.numberOfLines = 2;
+	self.status.numberOfLines = 4;
 	self.status.translatesAutoresizingMaskIntoConstraints = NO;
 
 	self.count = [[UISegmentedControl alloc] initWithItems:@[ @"1", @"3", @"5", @"10", @"25", @"50" ]];
@@ -75,6 +84,7 @@ static void MPSend(NSString *line, const char *note) {
 		[self.count.topAnchor constraintEqualToAnchor:self.status.bottomAnchor constant:10],
 		[self.count.leadingAnchor constraintEqualToAnchor:self.header.leadingAnchor constant:20],
 		[self.count.trailingAnchor constraintEqualToAnchor:self.header.trailingAnchor constant:-20],
+		[self.count.bottomAnchor constraintEqualToAnchor:self.header.bottomAnchor constant:-8],
 	]];
 	self.table.tableHeaderView = self.header;
 }
@@ -87,12 +97,15 @@ static void MPSend(NSString *line, const char *note) {
 	UIBarButtonItem *stop = [[UIBarButtonItem alloc] initWithTitle:@"Stop"
 															style:UIBarButtonItemStylePlain
 														   target:self action:@selector(stop)];
+	UIBarButtonItem *diag = [[UIBarButtonItem alloc] initWithTitle:@"Diagnosi"
+															 style:UIBarButtonItemStylePlain
+															target:self action:@selector(diagnose)];
 	UIBarButtonItem *flex = [[UIBarButtonItem alloc]
 		initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
 	UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"Pulisci"
 															 style:UIBarButtonItemStylePlain
 															target:self action:@selector(clear)];
-	self.toolbarItems = @[ go, flex, stop, flex, clear ];
+	self.toolbarItems = @[ go, flex, stop, flex, diag, flex, clear ];
 	self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
 		initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
 							 target:self action:@selector(reload)];
@@ -101,7 +114,6 @@ static void MPSend(NSString *line, const char *note) {
 - (void)viewWillAppear:(BOOL)animated {
 	[super viewWillAppear:animated];
 	self.navigationController.toolbarHidden = NO;
-	// il tweak scrive mentre guardiamo: senza refresh la lista resta indietro
 	__weak __typeof(self) weakSelf = self;
 	self.timer = [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES
 												  block:^(__unused NSTimer *t) { [weakSelf reload]; }];
@@ -115,10 +127,12 @@ static void MPSend(NSString *line, const char *note) {
 
 - (void)viewDidLayoutSubviews {
 	[super viewDidLayoutSubviews];
-	CGFloat h = 96;
-	if (self.header.frame.size.height != h ||
-		self.header.frame.size.width != self.table.bounds.size.width) {
-		self.header.frame = CGRectMake(0, 0, self.table.bounds.size.width, h);
+	CGFloat w = self.table.bounds.size.width;
+	CGSize sz = [self.header systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height)];
+	CGFloat h = MAX(128, sz.height);
+	if (fabs(self.header.frame.size.height - h) > 0.5 ||
+		fabs(self.header.frame.size.width - w) > 0.5) {
+		self.header.frame = CGRectMake(0, 0, w, h);
 		self.table.tableHeaderView = self.header;
 	}
 }
@@ -135,12 +149,32 @@ static void MPSend(NSString *line, const char *note) {
 - (void)start {
 	NSInteger n = [self chosenCount];
 	MPSend([NSString stringWithFormat:@"session %ld", (long)n], "com.noxlab.miao.session");
-	self.status.text = [NSString stringWithFormat:@"Avviate %ld sessioni, il resto lo fa SpringBoard", (long)n];
+	self.diagLine = [NSString stringWithFormat:@"Comando session %ld inviato a SpringBoard", (long)n];
+	[self updateStatus];
 }
 
 - (void)stop {
 	MPSend(@"stop", "com.noxlab.miao.stop");
-	self.status.text = @"Stop inviato";
+	self.diagLine = @"Stop inviato";
+	[self updateStatus];
+}
+
+- (void)diagnose {
+	MiaoReportDiag *d = MiaoReportDiagnose();
+	self.diagLine = d.summary ?: @"?";
+	NSString *msg = [NSString stringWithFormat:
+		@"%@\n\nprimario: %@\nfallback: %@\nattivo: %@\nbyte: %llu  righe: %ld  sessioni: %ld\nleggi: %@  scrivi: %@\nerr: %@",
+		d.summary ?: @"?",
+		d.primaryPath, d.fallbackPath, d.activePath,
+		d.bytes, (long)d.lineCount, (long)d.sessionCount,
+		d.canRead ? @"si" : @"NO", d.canWrite ? @"si" : @"NO",
+		d.lastError.length ? d.lastError : @"—"];
+	UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Diagnosi storage"
+															   message:msg
+														preferredStyle:UIAlertControllerStyleAlert];
+	[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+	[self presentViewController:a animated:YES completion:nil];
+	[self reload];
 }
 
 - (void)clear {
@@ -152,6 +186,7 @@ static void MPSend(NSString *line, const char *note) {
 	[a addAction:[UIAlertAction actionWithTitle:@"Cancella" style:UIAlertActionStyleDestructive
 									   handler:^(__unused UIAlertAction *x) {
 		MiaoReportClear();
+		self.diagLine = @"Storico cancellato";
 		[self reload];
 	}]];
 	[self presentViewController:a animated:YES completion:nil];
@@ -171,22 +206,37 @@ static void MPSend(NSString *line, const char *note) {
 }
 
 - (void)updateStatus {
+	NSMutableString *s = [NSMutableString string];
 	if (!self.sessions.count) {
+		/* Niente scrittura di prova al refresh automatico: solo lettura. */
 		BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:kMiaoEventsPath];
-		self.status.text = exists ? @"Nessuna sessione registrata."
-								 : @"Nessun dato: il tweak non ha ancora scritto, o l'app non legge il file.";
-		return;
+		unsigned long long bytes = [[[NSFileManager defaultManager]
+			attributesOfItemAtPath:kMiaoEventsPath error:nil] fileSize];
+		NSString *fb = @"/var/mobile/Library/Preferences/com.noxlab.miao.events.jsonl";
+		unsigned long long fbBytes = [[[NSFileManager defaultManager]
+			attributesOfItemAtPath:fb error:nil] fileSize];
+		if (!exists && fbBytes == 0) {
+			[s appendString:@"Nessun file eventi: sandbox o tweak non ha scritto. Tocca Diagnosi."];
+		} else if (bytes == 0 && fbBytes == 0) {
+			[s appendString:@"File eventi vuoto. Avvia 1 sessione, poi tira per aggiornare."];
+		} else {
+			[s appendFormat:@"File %llu/%llu byte ma 0 sessioni. Tocca Diagnosi.",
+				bytes, fbBytes];
+		}
+	} else {
+		NSInteger ok = 0, done = 0;
+		MiaoRunReport *last = self.sessions.firstObject;
+		for (MiaoRunReport *r in self.sessions) {
+			if (r.end <= 0) continue;
+			done++;
+			if (r.ok) ok++;
+		}
+		NSString *now = last.end > 0 ? @"" : @" · una in corso";
+		[s appendFormat:@"%ld complete, %ld riuscite%@", (long)done, (long)ok, now];
 	}
-	NSInteger ok = 0, done = 0;
-	MiaoRunReport *last = self.sessions.firstObject;
-	for (MiaoRunReport *r in self.sessions) {
-		if (r.end <= 0) continue;
-		done++;
-		if (r.ok) ok++;
-	}
-	NSString *now = last.end > 0 ? @"" : @" · una in corso";
-	self.status.text = [NSString stringWithFormat:@"%ld complete, %ld riuscite%@\nQuante sessioni avviare:",
-		(long)done, (long)ok, now];
+	[s appendString:@"\nQuante sessioni avviare:"];
+	if (self.diagLine.length) [s appendFormat:@"\n%@", self.diagLine];
+	self.status.text = s;
 }
 
 - (MiaoRunReport *)sessionAt:(NSInteger)section {

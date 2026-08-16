@@ -3,12 +3,12 @@
 /**
  Esiti delle sessioni in un formato che si possa leggere da un altro processo.
 
- Il tweak scrive una riga JSON per evento (JSON Lines) e il pannello la rilegge:
- niente stato condiviso in memoria, niente IPC da mantenere, e il file resta
- leggibile anche quando Safari e' stato ucciso a meta' sessione. I dati restano
- sul dispositivo: nessuna informazione viene aggiunta alle pagine visitate.
+ Il tweak scrive una riga JSON per evento (JSON Lines) e il pannello la rilegge.
+ I dati restano sul dispositivo: nessuna informazione viene aggiunta alle pagine.
  */
 
+/// Path primario (Documents mobile). Su Dopamine l'app lo legge solo con
+/// no-container / no-sandbox; c'e' anche un path di fallback in Preferences.
 extern NSString *const kMiaoEventsPath;
 
 /// Un passo della sessione con il suo esito misurato.
@@ -35,34 +35,48 @@ extern NSString *const kMiaoEventsPath;
 - (NSInteger)failedCount;
 @end
 
+/// Diagnosi leggibile: path usati, byte, ultimo errore di I/O, se si puo' scrivere.
+@interface MiaoReportDiag : NSObject
+@property (nonatomic, copy) NSString *primaryPath;
+@property (nonatomic, copy) NSString *fallbackPath;
+@property (nonatomic, copy) NSString *activePath;
+@property (nonatomic) unsigned long long bytes;
+@property (nonatomic) NSInteger lineCount;
+@property (nonatomic) NSInteger sessionCount;
+@property (nonatomic) BOOL canRead;
+@property (nonatomic) BOOL canWrite;
+@property (nonatomic, copy) NSString *lastError;
+@property (nonatomic, copy) NSString *summary;
+@end
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 #pragma mark - Scrittura (tweak)
 
+/// Assicura cartelle/file e permessi 0666. Idempotente.
+void MiaoReportEnsure(void);
+
 /// Apre una sessione e restituisce il suo id. `seed` 0 = generato qui.
 NSString *MiaoReportBegin(NSString *kind, uint32_t seed);
 
-/// Registra un passo. La durata e' il tempo dal passo precedente, misurato qui
-/// per non doverla passare da ogni punto del flusso.
+/// Registra un passo. La durata e' il tempo dal passo precedente.
 void MiaoReportStep(NSString *name, BOOL ok, NSString *detail);
 
-/// Chiude la sessione aperta. Senza questa la sessione resta "in corso".
+/// Chiude la sessione aperta.
 void MiaoReportEnd(BOOL ok, NSString *verdict);
 
-/// Id della sessione aperta, nil se nessuna.
 NSString *MiaoReportSid(void);
-
-/// Seed della sessione aperta: le pause e le ampiezze dei gesti derivano da qui,
-/// cosi' una sessione che fallisce si puo' rigiocare identica.
 uint32_t MiaoReportSeed(void);
+
+/// Ultimo errore di scrittura (stringa vuota se ok).
+NSString *MiaoReportLastWriteError(void);
 
 #pragma mark - Lettura (pannello)
 
-/// Le ultime `maxSessions` sessioni, dalla piu' recente alla piu' vecchia.
 NSArray<MiaoRunReport *> *MiaoReportRead(NSInteger maxSessions);
-
+MiaoReportDiag *MiaoReportDiagnose(void);
 void MiaoReportClear(void);
 
 #ifdef __cplusplus
