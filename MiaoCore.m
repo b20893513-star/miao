@@ -762,6 +762,10 @@ static BOOL MiaoFrontIsVideo(void) {
 	return MiaoURLIsVideo(MiaoWebViewURL(MiaoFrontWebView()));
 }
 
+static BOOL MiaoSiteHasVideo(void) {
+	return MiaoURLIsVideo(MiaoWebViewURL(MiaoSiteWebView()));
+}
+
 static BOOL MiaoClassLooksLikeVideoFS(NSString *n) {
 	if (!n.length) return NO;
 	n = n.lowercaseString;
@@ -2783,13 +2787,40 @@ static void MiaoRunContinueToVideo(NSString *why) {
 		MiaoAfter(MiaoHumanDelay(0.8, 0.5), ^{ MiaoRunWaitSkip(); });
 		return;
 	}
+	/* Il /video/ del primo tap e' ancora sulla scheda Nox. openURL home
+	   (0.14.3) lo butta via e ritappa: per questo non si arrivava a visione. */
+	if (MiaoSiteHasVideo()) {
+		MiaoToast(@"Torno al video");
+		if (MiaoSelectSiteTab()) {
+			MiaoAfter(1.2, ^{
+				gRunTapTries = 0;
+				if (MiaoFrontIsVideo() && !MiaoForeignFront())
+					MiaoRunWaitSkip();
+				else
+					MiaoRunEnd(@"video in scheda, non in primo piano", NO);
+			});
+			return;
+		}
+		MiaoAXNode *card = MiaoSiteCard();
+		if (MiaoInTabOverview() && card) {
+			MiaoTapNode(card, @"scheda-video");
+			MiaoAfter(1.5, ^{
+				gRunTapTries = 0;
+				if (MiaoFrontIsVideo() && !MiaoForeignFront())
+					MiaoRunWaitSkip();
+				else
+					MiaoRunContinueToVideo(@"dopo tap scheda video");
+			});
+			return;
+		}
+	}
 	if (MiaoInTabOverview()) {
 		MiaoToast(@"Esco dai pannelli");
-		MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
-		if (fine) MiaoTapNode(fine, @"fine-rescue");
+		MiaoAXNode *card = MiaoSiteCard();
+		if (card) MiaoTapNode(card, @"scheda-rescue");
 		else {
-			MiaoAXNode *card = MiaoSiteCard();
-			if (card) MiaoTapNode(card, @"scheda-rescue");
+			MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
+			if (fine) MiaoTapNode(fine, @"fine-rescue");
 		}
 		MiaoAfter(1.5, ^{ MiaoRunContinueToVideo(@"dopo Fine"); });
 		return;
@@ -2797,23 +2828,13 @@ static void MiaoRunContinueToVideo(NSString *why) {
 	MiaoToast(@"Riapro sito");
 	MiaoOpenURL(MiaoHomeURL());
 	MiaoAfter(3.4, ^{
-		if (MiaoInTabOverview()) {
-			MiaoAXNode *f2 = MiaoAXFind(MiaoNamesDone());
-			if (f2) MiaoTapNode(f2, @"fine-rescue-2");
-			MiaoAfter(1.2, ^{
-				gRunTapTries = 0;
-				if (MiaoFrontIsVideo() && !MiaoForeignFront())
-					MiaoRunWaitSkip();
-				else
-					MiaoRunPickAndTap();
-			});
-			return;
-		}
 		gRunTapTries = 0;
 		if (MiaoFrontIsVideo() && !MiaoForeignFront())
 			MiaoRunWaitSkip();
-		else
+		else if (MiaoSiteIsFront() && !MiaoInTabOverview())
 			MiaoRunPickAndTap();
+		else
+			MiaoRunEnd(@"openURL home non ha portato al sito", NO);
 	});
 }
 /**
@@ -3018,11 +3039,18 @@ static void MiaoRunAfterFirstTap(void) {
 					[NSString stringWithFormat:@"estranee=%ld overview=%d front=%d",
 						(long)MiaoForeignTabCount(),
 						MiaoInTabOverview() ? 1 : 0, front ? 1 : 0]);
+				if (MiaoFrontIsVideo() && !MiaoForeignFront()) {
+					MiaoAfter(MiaoHumanDelay(0.8, 0.5), ^{ MiaoRunWaitSkip(); });
+					return;
+				}
+				if (MiaoSiteHasVideo()) {
+					MiaoRunContinueToVideo(@"ads chiuse, vado sul video gia aperto");
+					return;
+				}
 				if (!ok) {
 					MiaoRunContinueToVideo(@"non torno sulla pagina (pannelli?)");
 					return;
 				}
-				/* dopo la chiusura ci si riprende: non si ritappa subito */
 				MiaoAfter(MiaoHumanDelay(1.2, 1.8), ^{ MiaoRunSecondTap(); });
 			});
 		});
@@ -3310,7 +3338,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.13 mix-700");
+	MiaoLog(@"safari ready 0.14.14 watch-existing-video");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3470,7 +3498,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.13 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.14 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3571,7 +3599,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.13 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.14 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

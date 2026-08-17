@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.13
+Version: 0.14.14
 Architecture: iphoneos-arm64
-Description: Aggressive click-ads; marathon 700 mixed personas.
+Description: After ads go to existing /video/, do not openURL home.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
