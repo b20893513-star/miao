@@ -83,7 +83,7 @@ static void MPSend(NSString *line, const char *note) {
 }
 
 - (void)buildHeader {
-	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 260)];
+	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 310)];
 
 	self.status = [UILabel new];
 	self.status.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
@@ -91,15 +91,16 @@ static void MPSend(NSString *line, const char *note) {
 	self.status.numberOfLines = 4;
 	self.status.translatesAutoresizingMaskIntoConstraints = NO;
 
-	self.count = [[UISegmentedControl alloc] initWithItems:@[ @"1", @"3", @"5", @"10", @"25", @"50" ]];
+	self.count = [[UISegmentedControl alloc] initWithItems:@[ @"1", @"5", @"10", @"50", @"700" ]];
 	self.count.selectedSegmentIndex = 0;
 	self.count.translatesAutoresizingMaskIntoConstraints = NO;
 
 	UIButton *b0 = [self personaButton:@"Curioso" mood:@"curious"];
 	UIButton *b1 = [self personaButton:@"Casual" mood:@"casual"];
 	UIButton *b2 = [self personaButton:@"Mirato" mood:@"focused"];
-	UIButton *b3 = [self personaButton:@"Click ads" mood:@"clickall"];
+	UIButton *b3 = [self personaButton:@"Click ads+" mood:@"clickall"];
 	UIButton *b4 = [self personaButton:@"Sessione lunga" mood:@"videolong"];
+	UIButton *b5 = [self personaButton:@"Maratona 700" mood:@"mix"];
 
 	UIStackView *row1 = [[UIStackView alloc] initWithArrangedSubviews:@[ b0, b1, b2 ]];
 	row1.axis = UILayoutConstraintAxisHorizontal;
@@ -111,7 +112,12 @@ static void MPSend(NSString *line, const char *note) {
 	row2.distribution = UIStackViewDistributionFillEqually;
 	row2.spacing = 8;
 
-	self.personas = [[UIStackView alloc] initWithArrangedSubviews:@[ row1, row2 ]];
+	UIStackView *row3 = [[UIStackView alloc] initWithArrangedSubviews:@[ b5 ]];
+	row3.axis = UILayoutConstraintAxisHorizontal;
+	row3.distribution = UIStackViewDistributionFillEqually;
+	row3.spacing = 8;
+
+	self.personas = [[UIStackView alloc] initWithArrangedSubviews:@[ row1, row2, row3 ]];
 	self.personas.axis = UILayoutConstraintAxisVertical;
 	self.personas.spacing = 8;
 	self.personas.translatesAutoresizingMaskIntoConstraints = NO;
@@ -174,7 +180,7 @@ static void MPSend(NSString *line, const char *note) {
 	[super viewDidLayoutSubviews];
 	CGFloat w = self.table.bounds.size.width;
 	CGSize sz = [self.header systemLayoutSizeFittingSize:CGSizeMake(w, UILayoutFittingCompressedSize.height)];
-	CGFloat h = MAX(260, sz.height);
+	CGFloat h = MAX(310, sz.height);
 	if (fabs(self.header.frame.size.height - h) > 0.5 ||
 		fabs(self.header.frame.size.width - w) > 0.5) {
 		self.header.frame = CGRectMake(0, 0, w, h);
@@ -185,7 +191,7 @@ static void MPSend(NSString *line, const char *note) {
 #pragma mark - Comandi
 
 - (NSInteger)chosenCount {
-	NSArray *vals = @[ @1, @3, @5, @10, @25, @50 ];
+	NSArray *vals = @[ @1, @5, @10, @50, @700 ];
 	NSInteger i = self.count.selectedSegmentIndex;
 	if (i < 0 || i >= (NSInteger)vals.count) return 1;
 	return [vals[(NSUInteger)i] integerValue];
@@ -194,6 +200,7 @@ static void MPSend(NSString *line, const char *note) {
 - (void)startPersona:(UIButton *)sender {
 	NSString *mood = sender.accessibilityIdentifier ?: @"casual";
 	NSInteger n = [self chosenCount];
+	if ([mood isEqualToString:@"mix"]) n = 700;
 	MPSend([NSString stringWithFormat:@"session %ld %@", (long)n, mood],
 		"com.noxlab.miao.session");
 	self.diagLine = [NSString stringWithFormat:@"Avvio %ld × %@", (long)n, mood];

@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.12
+Version: 0.14.13
 Architecture: iphoneos-arm64
-Description: Restore Opus 0.14.3 close ads and openURL rescue.
+Description: Aggressive click-ads; marathon 700 mixed personas.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

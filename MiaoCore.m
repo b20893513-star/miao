@@ -177,11 +177,12 @@ static BOOL MiaoIsSiteURL(NSString *url) {
  Stessi base/spread a ogni passo = firma robotica. Qui il seed del report fa da
  persona: un run e' curioso (scrolla di piu', video piu' in basso, resta
  sull'ad), un altro e' frettoloso ma non istantaneo, un altro e' normale.
- Mood 3 = click tutte le ads; 4 = visione video lunga + scrub.
+ Mood 3 = click ads aggressivo; 4 = visione lunga; 5-9 altre mani;
+ 10 = mix (ogni ciclo una persona diversa).
  */
 static uint32_t gRng = 0;
-static NSInteger gMood = 1; // 0 curioso, 1 casual, 2 mirato, 3 clickall, 4 videolungo
-/// Scritto da SpringBoard quando il pannello forza una persona (-1 = auto).
+static NSInteger gMood = 1;
+/// -1 auto, 0-9 persona, 10 mix.
 static NSInteger gForcedMood = -1;
 
 static double MiaoRng(void) {
@@ -198,6 +199,12 @@ static NSString *MiaoMoodName(NSInteger m) {
 		case 2: return @"focused";
 		case 3: return @"clickall";
 		case 4: return @"videolong";
+		case 5: return @"impatient";
+		case 6: return @"lingerer";
+		case 7: return @"scroller";
+		case 8: return @"hunter";
+		case 9: return @"night";
+		case 10: return @"mix";
 		default: return @"casual";
 	}
 }
@@ -210,7 +217,21 @@ static NSInteger MiaoParseMoodToken(NSString *tok) {
 	if ([t hasPrefix:@"foc"] || [t hasPrefix:@"mir"] || [t isEqualToString:@"2"]) return 2;
 	if ([t hasPrefix:@"click"] || [t isEqualToString:@"3"]) return 3;
 	if ([t hasPrefix:@"video"] || [t hasPrefix:@"lung"] || [t isEqualToString:@"4"]) return 4;
+	if ([t hasPrefix:@"imp"] || [t isEqualToString:@"5"]) return 5;
+	if ([t hasPrefix:@"ling"] || [t isEqualToString:@"6"]) return 6;
+	if ([t hasPrefix:@"scro"] || [t isEqualToString:@"7"]) return 7;
+	if ([t hasPrefix:@"hunt"] || [t isEqualToString:@"8"]) return 8;
+	if ([t hasPrefix:@"night"] || [t isEqualToString:@"9"]) return 9;
+	if ([t hasPrefix:@"mix"] || [t hasPrefix:@"cast"] || [t hasPrefix:@"mara"] ||
+		[t isEqualToString:@"10"]) return 10;
 	return -1;
+}
+
+/// 10 persone, mai due uguali di fila. Per la maratona 700.
+static NSInteger MiaoMixMood(NSInteger idx) {
+	static const NSInteger seq[10] = { 3, 5, 4, 1, 8, 0, 2, 6, 7, 9 };
+	if (idx < 0) idx = 0;
+	return seq[(NSUInteger)idx % 10];
 }
 
 static NSArray<NSString *> *MiaoMoodPaths(void) {
@@ -248,7 +269,7 @@ static NSInteger MiaoMoodRead(void) {
 		unichar c = [line characterAtIndex:0];
 		if ([[NSCharacterSet decimalDigitCharacterSet] characterIsMember:c]) {
 			NSInteger n = [line integerValue];
-			if (n >= 0 && n <= 4) return n;
+			if (n >= 0 && n <= 10) return n;
 		}
 		NSInteger named = MiaoParseMoodToken(line);
 		if (named >= 0) return named;
@@ -262,7 +283,8 @@ static void MiaoPersonaBegin(void) {
 	gRng = s | 1;
 	NSInteger forced = MiaoMoodRead();
 	if (forced < 0) forced = gForcedMood;
-	if (forced >= 0 && forced <= 4) gMood = forced;
+	if (forced == 10) gMood = MiaoMixMood((NSInteger)(s % 100));
+	else if (forced >= 0 && forced <= 9) gMood = forced;
 	else gMood = (NSInteger)(s % 3);
 	/* Tocchi con una "mano" diversa per seed+mood: hold, raggio, drift. */
 	MiaoUIKitSetTouchSeed(s ^ ((uint32_t)(gMood + 1) * 0x9E3779B9u));
@@ -287,9 +309,11 @@ static NSTimeInterval MiaoHumanDelay(NSTimeInterval base, NSTimeInterval spread)
 	double skew = u * u; // favorisce valori piccoli di u → pause medie, coda lunga se invertiamo
 	NSTimeInterval t = base * (0.75 + MiaoRng() * 0.55) + spread * (0.35 + skew * 0.9);
 	if (MiaoRng() < 0.14) t += MiaoBetween(1.1, 3.8); // si ferma a leggere / pensa
-	if (gMood == 0 || gMood == 4) t *= 1.25; // curioso / video lungo
-	else if (gMood == 2) t *= 0.92;          // mirato: un filo piu' svelto
-	else if (gMood == 3) t *= 1.15;          // clickall: resta a cercare CTA
+	if (gMood == 0 || gMood == 4 || gMood == 9) t *= 1.25;
+	else if (gMood == 2 || gMood == 5) t *= 0.78;
+	else if (gMood == 3 || gMood == 8) t *= 1.12;
+	else if (gMood == 6) t *= 1.40;
+	else if (gMood == 7) t *= 1.10;
 	return MAX(0.15, t);
 }
 
@@ -298,8 +322,13 @@ static NSTimeInterval MiaoAdDwell(void) {
 	NSTimeInterval t;
 	if (gMood == 0) t = MiaoBetween(6.0, 12.0);
 	else if (gMood == 2) t = MiaoBetween(5.0, 8.5);
-	else if (gMood == 3) t = MiaoBetween(8.0, 16.0);
+	else if (gMood == 3) t = MiaoBetween(12.0, 22.0); /* click aggressivo */
 	else if (gMood == 4) t = MiaoBetween(3.0, 5.5);
+	else if (gMood == 5) t = MiaoBetween(3.0, 5.0);
+	else if (gMood == 6) t = MiaoBetween(14.0, 22.0);
+	else if (gMood == 7) t = MiaoBetween(5.0, 8.0);
+	else if (gMood == 8) t = MiaoBetween(10.0, 16.0);
+	else if (gMood == 9) t = MiaoBetween(4.0, 7.0);
 	else t = MiaoBetween(5.5, 10.0);
 	if (MiaoRng() < 0.2) t += MiaoBetween(2.0, 5.0);
 	return t;
@@ -2658,13 +2687,18 @@ static void MiaoRunNextOrEnd(NSString *msg) {
 }
 
 static void MiaoRunWatchThenEnd(NSString *msg) {
-	BOOL wantFS = (gMood != 2);
+	BOOL wantFS = (gMood != 2 && gMood != 5);
 	NSTimeInterval minWatch;
 	if (gRunSecondVideo) minWatch = MiaoBetween(40.0, 70.0);
 	else if (gMood == 4) minWatch = MiaoBetween(90.0, 120.0);
 	else if (gMood == 2) minWatch = MiaoBetween(35.0, 65.0);
-	else if (gMood == 3) minWatch = MiaoBetween(50.0, 80.0);
-	else minWatch = MiaoBetween(100.0, 130.0); /* casual / curioso */
+	else if (gMood == 3) minWatch = MiaoBetween(40.0, 70.0);
+	else if (gMood == 5) minWatch = MiaoBetween(22.0, 40.0);
+	else if (gMood == 6) minWatch = MiaoBetween(80.0, 110.0);
+	else if (gMood == 7) minWatch = MiaoBetween(45.0, 70.0);
+	else if (gMood == 8) minWatch = MiaoBetween(40.0, 60.0);
+	else if (gMood == 9) minWatch = MiaoBetween(100.0, 140.0);
+	else minWatch = MiaoBetween(100.0, 130.0);
 
 	void (^watchIdle)(BOOL inFS) = ^(BOOL inFS) {
 		if (inFS) gRunDidFS = YES;
@@ -2874,6 +2908,33 @@ static void MiaoRunSecondTap(void) {
 	});
 }
 
+static void MiaoAdClicks(NSInteger left, void (^done)(void)) {
+	if (left <= 0) {
+		if (done) done();
+		return;
+	}
+	CGPoint p = MiaoPtAdCenter();
+	if (gMood == 3 || gMood == 8) {
+		p.x += MiaoNudge(28);
+		p.y += MiaoNudge(36);
+	}
+	BOOL ok = MiaoTapPt(p, @"ad-centro");
+	MiaoStepResult(@"ad-click", ok,
+		[NSString stringWithFormat:@"tap landing n=%ld", (long)left]);
+	NSTimeInterval gap = (gMood == 3) ? MiaoBetween(0.55, 1.3) : MiaoBetween(1.2, 2.6);
+	MiaoAfter(gap, ^{
+		if ((gMood == 3 || gMood == 8) && left > 1 && MiaoRng() < 0.4) {
+			CGFloat dy = 40 + (CGFloat)(MiaoRng() * 90);
+			if (MiaoRng() < 0.5) dy = -dy;
+			MiaoGestureScroll(dy, ^{
+				MiaoAfter(MiaoBetween(0.35, 0.8), ^{ MiaoAdClicks(left - 1, done); });
+			});
+			return;
+		}
+		MiaoAdClicks(left - 1, done);
+	});
+}
+
 /**
  Resta sull'ad come una persona: guarda, eventualmente clicca il creativo,
  scrolla un po', esita, poi chiude.
@@ -2912,7 +2973,9 @@ static void MiaoLingerOnAd(void (^done)(void)) {
 		   si guarda l'ad e si chiude: cosi' Relay vede l'impression e
 		   tu vedi davvero la landing, non un tap immediato che la fa sparire. */
 		NSInteger clicks = 0;
-		if (gMood == 3) clicks = 2 + (NSInteger)(MiaoRng() * 3); // 2-4
+		if (gMood == 3) clicks = 4 + (NSInteger)(MiaoRng() * 4); /* 4-7 aggressivo */
+		else if (gMood == 8) clicks = 3 + (NSInteger)(MiaoRng() * 3); /* 3-5 hunter */
+		else if (gMood == 6 && MiaoRng() < 0.85) clicks = 1;
 		else if (gMood == 0 && MiaoRng() < 0.16) clicks = 1;
 		else if (gMood == 1 && MiaoRng() < 0.08) clicks = 1;
 
@@ -2920,20 +2983,8 @@ static void MiaoLingerOnAd(void (^done)(void)) {
 			MiaoStepResult(@"ad-click", YES, @"guardata, nessun tap (persona)");
 			afterClicks();
 		} else {
-			/* Centro landing: un dito, niente querySelector sul creativo. */
-			void (^one)(void (^)(void)) = ^(void (^next)(void)) {
-				BOOL ok = MiaoTapPt(MiaoPtAdCenter(), @"ad-centro");
-				MiaoStepResult(@"ad-click", ok, @"tap centro landing");
-				MiaoAfter(MiaoBetween(1.6, 3.2), ^{ if (next) next(); });
-			};
-			if (clicks == 1) {
-				one(afterClicks);
-			} else {
-				MiaoToast([NSString stringWithFormat:@"Click ads x%ld", (long)clicks]);
-				one(^{
-					one(afterClicks);
-				});
-			}
+			MiaoToast([NSString stringWithFormat:@"Click ads x%ld", (long)clicks]);
+			MiaoAdClicks(clicks, afterClicks);
 		}
 	});
 }
@@ -2990,8 +3041,9 @@ static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
 	/* Flick corti: 180–440 pt (vecchio curioso) mandavano la card
 	   fuori schermo e il tap cadeva su titolo / sort / chip. */
 	CGFloat dy = 90 + (CGFloat)(MiaoRng() * 80);
-	if (gMood == 2) dy = 50 + (CGFloat)(MiaoRng() * 70);
-	if (gMood == 0 || gMood == 4) dy = 80 + (CGFloat)(MiaoRng() * 90);
+	if (gMood == 2 || gMood == 5) dy = 50 + (CGFloat)(MiaoRng() * 70);
+	if (gMood == 0 || gMood == 4 || gMood == 9) dy = 80 + (CGFloat)(MiaoRng() * 90);
+	if (gMood == 7) dy = 100 + (CGFloat)(MiaoRng() * 80);
 	if (MiaoRng() < 0.18) dy = -(50 + (CGFloat)(MiaoRng() * 70));
 	MiaoGestureScroll(dy, ^{
 		MiaoAfter(MiaoHumanDelay(0.7, 1.4), ^{
@@ -3062,7 +3114,7 @@ static void MiaoRunPickAndTap(void) {
 		return;
 	}
 	/* Un passaggio solo: due flick + tap basso (curioso) uscivano dalla card. */
-	NSInteger passes = 1;
+	NSInteger passes = (gMood == 7) ? 2 : 1;
 	MiaoToast(@"Scroll…");
 	MiaoExploreHome(passes, ^{
 		MiaoStepResult(@"scroll", YES,
@@ -3118,7 +3170,8 @@ static void MiaoActRun(void) {
 	MiaoReportBegin(@"run", 0);
 	MiaoPersonaBegin();
 	/* Lunga: un video da ~2 min. Due partenze = due volte il rischio pannelli. */
-	gRunVideosLeft = (gMood == 2 || gMood == 4) ? 1 : 2;
+	gRunVideosLeft = (gMood == 2 || gMood == 4 || gMood == 5 || gMood == 6 ||
+		gMood == 8 || gMood == 9) ? 1 : 2;
 	if (MiaoReportLastWriteError().length) {
 		MiaoLog([NSString stringWithFormat:@"report write ERR %@", MiaoReportLastWriteError()]);
 		MiaoToast(@"Report: scrittura fallita");
@@ -3257,7 +3310,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.12 opus-0.14.3");
+	MiaoLog(@"safari ready 0.14.13 mix-700");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3350,7 +3403,13 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 		MiaoToast(@"Run...");
 		/* Passa il mood nel comando: unico canale affidabile verso Safari. */
 		NSString *runCmd = @"run";
-		if (gForcedMood >= 0 && gForcedMood <= 4) {
+		if (gForcedMood == 10) {
+			NSInteger m = MiaoMixMood(idx);
+			MiaoMoodWrite(m);
+			runCmd = [NSString stringWithFormat:@"run %@", MiaoMoodName(m)];
+			MiaoLog([NSString stringWithFormat:@"mix cycle %ld persona=%@",
+				(long)idx, MiaoMoodName(m)]);
+		} else if (gForcedMood >= 0 && gForcedMood <= 9) {
 			runCmd = [NSString stringWithFormat:@"run %@", MiaoMoodName(gForcedMood)];
 		}
 		MiaoSendCmd(runCmd);
@@ -3408,10 +3467,10 @@ static void MiaoSessionRun(NSInteger cycles) {
 		return;
 	}
 	gSessionBusy = YES;
-	NSInteger n = cycles > 0 ? MIN(cycles, 200) : MiaoCycles();
+	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.12 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.13 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3512,7 +3571,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.12 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.13 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
