@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.11
+Version: 0.14.12
 Architecture: iphoneos-arm64
-Description: Schede then tap Nox only; watch existing video, no home re-tap.
+Description: Restore Opus 0.14.3 close ads and openURL rescue.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
