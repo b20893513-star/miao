@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.18
+Version: 0.14.19
 Architecture: iphoneos-arm64
-Description: Never openURL while ads are up: back on the Nox tab, close every X (0.14.4 logic).
+Description: Opens NoxReel when no tab exists, resumes the existing tab when it does.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
