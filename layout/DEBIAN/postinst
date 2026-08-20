@@ -71,7 +71,7 @@ if command -v uicache >/dev/null 2>&1; then
 fi
 
 {
-  echo "miao 0.14.15 postinst $(date)"
+  echo "miao 0.14.16 postinst $(date)"
   ls -la /var/jb/Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || ls -la /Library/MobileSubstrate/DynamicLibraries/Miao* 2>/dev/null || true
   ls -ld "$APP" 2>/dev/null || true
   ls -la "$DOC/miao-events.jsonl" "$PREF/com.noxlab.miao.events.jsonl" 2>/dev/null || true
@@ -80,5 +80,5 @@ fi
     ldid -e "$BIN" 2>/dev/null || true
   fi
 } > /var/mobile/Documents/miao-postinst.txt 2>/dev/null || true
-echo "Miao 0.14.15 — Userspace Reboot, poi apri l'app Miao"
+echo "Miao 0.14.16 — Userspace Reboot, poi apri l'app Miao"
 exit 0

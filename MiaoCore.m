@@ -474,22 +474,6 @@ static BOOL MiaoSiteIsFront(void) {
 	return front && MiaoIsSiteURL(MiaoWebViewURL(front));
 }
 
-/**
- Apre noxreel SOLO se non c'e' gia' una scheda del sito.
- Mid-run openURL = nuova tab + nuovi pop: vietato se SiteWebView esiste.
- */
-static void MiaoOpenHomeIfMissing(void (^done)(void)) {
-	if (MiaoSiteWebView() != nil) {
-		MiaoLog(@"home: scheda sito gia' presente, niente openURL");
-		if (done) done();
-		return;
-	}
-	MiaoToast(@"Apro NoxReel");
-	MiaoLog(@"home: nessuna scheda sito → openURL");
-	MiaoOpenURL(MiaoHomeURL());
-	MiaoAfter(3.6, ^{ if (done) done(); });
-}
-
 static id MiaoBestWebView(void) {
 	id pick = MiaoSiteWebView() ?: MiaoFrontWebView();
 	if (!pick) pick = MiaoAllWebViews().lastObject;
@@ -2942,6 +2926,14 @@ static void MiaoAdClicks(NSInteger left, void (^done)(void)) {
 		if (done) done();
 		return;
 	}
+	/* Ogni tap sulla landing puo' aprire un'altra scheda. Se se ne accumulano
+	   troppe la chiusura non ce la fa e il run non vede mai il video: meglio
+	   fermare i click che restare sepolti sotto le ads. */
+	if (MiaoForeignTabCount() > 3) {
+		MiaoStepResult(@"ad-click", YES, @"basta, troppe schede aperte");
+		if (done) done();
+		return;
+	}
 	CGPoint p = MiaoPtAdCenter();
 	if (gMood == 3 || gMood == 8) {
 		p.x += MiaoNudge(28);
@@ -3078,7 +3070,6 @@ static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
 	CGFloat dy = 90 + (CGFloat)(MiaoRng() * 80);
 	if (gMood == 2 || gMood == 5) dy = 50 + (CGFloat)(MiaoRng() * 70);
 	if (gMood == 0 || gMood == 4 || gMood == 9) dy = 80 + (CGFloat)(MiaoRng() * 90);
-	if (gMood == 7) dy = 100 + (CGFloat)(MiaoRng() * 80);
 	if (MiaoRng() < 0.18) dy = -(50 + (CGFloat)(MiaoRng() * 70));
 	MiaoGestureScroll(dy, ^{
 		MiaoAfter(MiaoHumanDelay(0.7, 1.4), ^{
@@ -3149,7 +3140,7 @@ static void MiaoRunPickAndTap(void) {
 		return;
 	}
 	/* Un passaggio solo: due flick + tap basso (curioso) uscivano dalla card. */
-	NSInteger passes = (gMood == 7) ? 2 : 1;
+	NSInteger passes = 1;
 	MiaoToast(@"Scroll…");
 	MiaoExploreHome(passes, ^{
 		MiaoStepResult(@"scroll", YES,
@@ -3215,8 +3206,10 @@ static void MiaoActRun(void) {
 		MiaoLog([NSString stringWithFormat:@"report begin sid=%@", MiaoReportSid() ?: @"?"]);
 	}
 
-	/* Cold start: senza scheda NoxReel non c'e' niente da toccare. */
-	MiaoOpenHomeIfMissing(^{ MiaoRunStartOnSite(); });
+	/* Niente openURL qui: crea una scheda nuova, la home si ricarica e i
+	   popunder ripartono a ogni ciclo. Se manca la scheda del sito ci pensa
+	   il recupero, che apre la home una volta sola. */
+	MiaoRunStartOnSite();
 }
 
 /// Il run vero e proprio: c'e' una scheda NoxReel, si parte da lei.
@@ -3348,7 +3341,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.15 rescue-non-si-arrende");
+	MiaoLog(@"safari ready 0.14.16 niente-openURL-a-ogni-ciclo");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3508,7 +3501,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.15 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.16 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3609,7 +3602,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.15 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.16 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
