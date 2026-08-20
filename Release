@@ -1,0 +1,8 @@
+Origin: Miao
+Label: Miao
+Suite: stable
+Version: 1.0
+Codename: stable
+Architectures: iphoneos-arm64
+Components: main
+Description: Miao rootless repo for Dopamine

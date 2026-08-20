@@ -1,0 +1,15 @@
+Package: com.noxlab.miao
+Name: Miao
+Description: Opens NoxReel when no tab exists, resumes the existing tab when it does.
+Maintainer: noxlab
+Author: noxlab
+Section: Tweaks
+Depends: firmware (>= 15.0)
+Architecture: iphoneos-arm64
+Version: 0.14.19
+Filename: debs/com.noxlab.miao_0.14.19_iphoneos-arm64.deb
+Size: 116768
+MD5sum: 9c554e88f6e348d01da5fef6a16911b3
+SHA1: 755b74bd27ee6e3f66215ddcfe5196772e70dec1
+SHA256: 94a1564ba21ece5c4250a54f34c3acfa042432cb055800ddbbc06d1a66b767f7
+
