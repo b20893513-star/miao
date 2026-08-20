@@ -91,7 +91,7 @@ static void MPSend(NSString *line, const char *note) {
 	self.status.numberOfLines = 4;
 	self.status.translatesAutoresizingMaskIntoConstraints = NO;
 
-	self.count = [[UISegmentedControl alloc] initWithItems:@[ @"1", @"5", @"10", @"50", @"700" ]];
+	self.count = [[UISegmentedControl alloc] initWithItems:@[ @"1", @"3", @"5", @"10", @"50", @"700" ]];
 	self.count.selectedSegmentIndex = 0;
 	self.count.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -191,7 +191,7 @@ static void MPSend(NSString *line, const char *note) {
 #pragma mark - Comandi
 
 - (NSInteger)chosenCount {
-	NSArray *vals = @[ @1, @5, @10, @50, @700 ];
+	NSArray *vals = @[ @1, @3, @5, @10, @50, @700 ];
 	NSInteger i = self.count.selectedSegmentIndex;
 	if (i < 0 || i >= (NSInteger)vals.count) return 1;
 	return [vals[(NSUInteger)i] integerValue];

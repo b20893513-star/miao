@@ -323,7 +323,7 @@ static NSTimeInterval MiaoAdDwell(void) {
 	if (gMood == 0) t = MiaoBetween(6.0, 12.0);
 	else if (gMood == 2) t = MiaoBetween(5.0, 8.5);
 	else if (gMood == 3) t = MiaoBetween(12.0, 22.0); /* click aggressivo */
-	else if (gMood == 4) t = MiaoBetween(3.0, 5.5);
+	else if (gMood == 4) t = MiaoBetween(5.0, 9.0);
 	else if (gMood == 5) t = MiaoBetween(3.0, 5.0);
 	else if (gMood == 6) t = MiaoBetween(14.0, 22.0);
 	else if (gMood == 7) t = MiaoBetween(5.0, 8.0);
@@ -2000,6 +2000,7 @@ static BOOL MiaoTapNode(MiaoAXNode *n, NSString *label) {
 	return ok;
 }
 
+/// La miniatura della nostra scheda nella griglia (grande, non un pulsantino).
 static MiaoAXNode *MiaoSiteCard(void) {
 	MiaoAXNode *best = nil;
 	for (MiaoAXNode *n in MiaoAXFindAll(MiaoSiteCardNames())) {
@@ -2357,7 +2358,6 @@ static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 	viaSafariUI();
 }
 
-
 #pragma mark - Loop ads
 
 /**
@@ -2507,6 +2507,8 @@ static NSInteger gRunVideosLeft = 1;
 static BOOL gRunDidFS = NO;
 static BOOL gRunSecondVideo = NO;
 static NSInteger gRunRescueTries = 0;
+/// Quante volte si e' provato a tornare sul /video/ della scheda Nox.
+static NSInteger gRunBackTries = 0;
 
 static void MiaoRunPickAndTap(void);
 static void MiaoRunAfterFirstTap(void);
@@ -2516,6 +2518,7 @@ static void MiaoRunContinueToVideo(NSString *why);
 static void MiaoRunEnd(NSString *msg, BOOL ok);
 static void MiaoRunWatchThenEnd(NSString *msg);
 static void MiaoRunNextOrEnd(NSString *msg);
+static void MiaoRunStartOnSite(void);
 
 /// Un passo con esito: finisce nel log leggibile e nel report del pannello.
 static void MiaoStepResult(NSString *name, BOOL ok, NSString *detail) {
@@ -2691,10 +2694,10 @@ static void MiaoRunNextOrEnd(NSString *msg) {
 }
 
 static void MiaoRunWatchThenEnd(NSString *msg) {
-	BOOL wantFS = (gMood != 2 && gMood != 5);
+	BOOL wantFS = (gMood != 2);
 	NSTimeInterval minWatch;
 	if (gRunSecondVideo) minWatch = MiaoBetween(40.0, 70.0);
-	else if (gMood == 4) minWatch = MiaoBetween(90.0, 120.0);
+	else if (gMood == 4) minWatch = MiaoBetween(110.0, 150.0);
 	else if (gMood == 2) minWatch = MiaoBetween(35.0, 65.0);
 	else if (gMood == 3) minWatch = MiaoBetween(40.0, 70.0);
 	else if (gMood == 5) minWatch = MiaoBetween(22.0, 40.0);
@@ -2787,29 +2790,23 @@ static void MiaoRunContinueToVideo(NSString *why) {
 		MiaoAfter(MiaoHumanDelay(0.8, 0.5), ^{ MiaoRunWaitSkip(); });
 		return;
 	}
-	/* Il /video/ del primo tap e' ancora sulla scheda Nox. openURL home
-	   (0.14.3) lo butta via e ritappa: per questo non si arrivava a visione. */
-	if (MiaoSiteHasVideo()) {
+	/* Il /video/ del primo tap e' ancora sulla scheda Nox: recuperarlo evita di
+	   riaprire la home e ritappare (nuovo giro di pop). Due tentativi, poi si
+	   passa oltre: selectTab risponde YES anche quando su iOS 16 non porta
+	   nulla davanti, e restare qui sprecherebbe tutti i recuperi. */
+	if (MiaoSiteHasVideo() && gRunBackTries < 2) {
+		gRunBackTries++;
 		MiaoToast(@"Torno al video");
-		if (MiaoSelectSiteTab()) {
-			MiaoAfter(1.2, ^{
+		BOOL asked = MiaoSelectSiteTab();
+		MiaoAXNode *card = (!asked && MiaoInTabOverview()) ? MiaoSiteCard() : nil;
+		if (card) MiaoTapNode(card, @"scheda-video");
+		if (asked || card) {
+			MiaoAfter(1.4, ^{
 				gRunTapTries = 0;
 				if (MiaoFrontIsVideo() && !MiaoForeignFront())
 					MiaoRunWaitSkip();
 				else
-					MiaoRunEnd(@"video in scheda, non in primo piano", NO);
-			});
-			return;
-		}
-		MiaoAXNode *card = MiaoSiteCard();
-		if (MiaoInTabOverview() && card) {
-			MiaoTapNode(card, @"scheda-video");
-			MiaoAfter(1.5, ^{
-				gRunTapTries = 0;
-				if (MiaoFrontIsVideo() && !MiaoForeignFront())
-					MiaoRunWaitSkip();
-				else
-					MiaoRunContinueToVideo(@"dopo tap scheda video");
+					MiaoRunContinueToVideo(@"scheda video non in primo piano");
 			});
 			return;
 		}
@@ -2828,15 +2825,26 @@ static void MiaoRunContinueToVideo(NSString *why) {
 	MiaoToast(@"Riapro sito");
 	MiaoOpenURL(MiaoHomeURL());
 	MiaoAfter(3.4, ^{
+		if (MiaoInTabOverview()) {
+			MiaoAXNode *f2 = MiaoAXFind(MiaoNamesDone());
+			if (f2) MiaoTapNode(f2, @"fine-rescue-2");
+			MiaoAfter(1.2, ^{
+				gRunTapTries = 0;
+				if (MiaoFrontIsVideo() && !MiaoForeignFront())
+					MiaoRunWaitSkip();
+				else
+					MiaoRunPickAndTap();
+			});
+			return;
+		}
 		gRunTapTries = 0;
 		if (MiaoFrontIsVideo() && !MiaoForeignFront())
 			MiaoRunWaitSkip();
-		else if (MiaoSiteIsFront() && !MiaoInTabOverview())
-			MiaoRunPickAndTap();
 		else
-			MiaoRunEnd(@"openURL home non ha portato al sito", NO);
+			MiaoRunPickAndTap();
 	});
 }
+
 /**
  6) aspetta il countdown VAST (>=10s sul sito) e tocca Skip in basso a destra
  del player. Poi play al centro. Niente scan DOM.
@@ -3043,14 +3051,13 @@ static void MiaoRunAfterFirstTap(void) {
 					MiaoAfter(MiaoHumanDelay(0.8, 0.5), ^{ MiaoRunWaitSkip(); });
 					return;
 				}
-				if (MiaoSiteHasVideo()) {
-					MiaoRunContinueToVideo(@"ads chiuse, vado sul video gia aperto");
-					return;
-				}
 				if (!ok) {
-					MiaoRunContinueToVideo(@"non torno sulla pagina (pannelli?)");
+					MiaoRunContinueToVideo(MiaoSiteHasVideo()
+						? @"ads chiuse, vado sul video gia aperto"
+						: @"non torno sulla pagina (pannelli?)");
 					return;
 				}
+				/* dopo la chiusura ci si riprende: non si ritappa subito */
 				MiaoAfter(MiaoHumanDelay(1.2, 1.8), ^{ MiaoRunSecondTap(); });
 			});
 		});
@@ -3194,6 +3201,7 @@ static void MiaoActRun(void) {
 	gRunDidFS = NO;
 	gRunSecondVideo = NO;
 	gRunRescueTries = 0;
+	gRunBackTries = 0;
 	MiaoToast(@"Run...");
 	MiaoReportBegin(@"run", 0);
 	MiaoPersonaBegin();
@@ -3207,8 +3215,12 @@ static void MiaoActRun(void) {
 		MiaoLog([NSString stringWithFormat:@"report begin sid=%@", MiaoReportSid() ?: @"?"]);
 	}
 
-	/* Cold start: senza scheda NoxReel non si apre nulla (0.14.4 aveva tolto openURL). */
-	MiaoOpenHomeIfMissing(^{
+	/* Cold start: senza scheda NoxReel non c'e' niente da toccare. */
+	MiaoOpenHomeIfMissing(^{ MiaoRunStartOnSite(); });
+}
+
+/// Il run vero e proprio: c'e' una scheda NoxReel, si parte da lei.
+static void MiaoRunStartOnSite(void) {
 	MiaoEnsureSiteFront(^(BOOL front) {
 		MiaoStepResult(@"sito-davanti", front, MiaoWebViewURL(MiaoFrontWebView()));
 		if (!front) {
@@ -3242,13 +3254,11 @@ static void MiaoActRun(void) {
 			return;
 		}
 		if (!u.length || !MiaoIsSiteURL(u)) {
-			MiaoOpenHomeIfMissing(^{
-				MiaoAfter(MiaoHumanDelay(0.8, 0.5), start);
-			});
+			MiaoOpenURL(MiaoHomeURL());
+			MiaoAfter(MiaoHumanDelay(1.5, 1.0), start);
 			return;
 		}
 		start();
-	});
 	});
 }
 
@@ -3338,7 +3348,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.14 watch-existing-video");
+	MiaoLog(@"safari ready 0.14.15 rescue-non-si-arrende");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3498,7 +3508,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.14 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.15 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3599,7 +3609,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.14 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.15 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

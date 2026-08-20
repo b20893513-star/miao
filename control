@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.14
+Version: 0.14.15
 Architecture: iphoneos-arm64
-Description: After ads go to existing /video/, do not openURL home.
+Description: Rescue never aborts: back to Opus flow, second tap restored.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
