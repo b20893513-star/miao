@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.16
+Version: 0.14.17
 Architecture: iphoneos-arm64
-Description: No openURL per cycle (was respawning popunders), scroll back to one flick.
+Description: Run taps the real /video/ link again (DOM rect + HIT), not a guessed zone.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

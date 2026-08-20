@@ -1362,13 +1362,13 @@ static void MiaoPickThumb(void (^done)(NSInteger idx)) {
 		}
 
 		NSArray *pool = nil;
-		if (gMood == 0 || gMood == 4) {
+		if (gMood == 0 || gMood == 4 || gMood == 9) {
 			/* curioso / video lungo: un po' piu' in basso, ma non oltre 2 schermate */
 			pool = mid.count ? mid : near;
 			if (MiaoRng() < 0.25 && far.count) pool = far;
 			if (MiaoRng() < 0.3 && near.count) pool = near;
-		} else if (gMood == 2) {
-			/* mirato: prende qualcosa di gia' in vista */
+		} else if (gMood == 2 || gMood == 5) {
+			/* mirato / frettoloso: prende qualcosa di gia' in vista */
 			pool = near.count ? near : (mid.count ? mid : all);
 			if (MiaoRng() < 0.2 && mid.count) pool = mid;
 		} else {
@@ -2503,6 +2503,7 @@ static void MiaoRunEnd(NSString *msg, BOOL ok);
 static void MiaoRunWatchThenEnd(NSString *msg);
 static void MiaoRunNextOrEnd(NSString *msg);
 static void MiaoRunStartOnSite(void);
+static void MiaoRunTapChosen(NSString *label, NSInteger zone, void (^done)(BOOL tapped));
 
 /// Un passo con esito: finisce nel log leggibile e nel report del pannello.
 static void MiaoStepResult(NSString *name, BOOL ok, NSString *detail) {
@@ -2915,9 +2916,24 @@ static void MiaoRunSecondTap(void) {
 	}
 	MiaoToast([NSString stringWithFormat:@"Ri-click video (%ld)", (long)gRunTapTries]);
 	MiaoAfter(MiaoHumanDelay(0.5, 0.8), ^{
-		BOOL tapped = MiaoTapPt(MiaoPtThumb(gRunTapTries > 1 ? 1 : 0), @"video-2");
-		MiaoStepResult(@"tap-video-2", tapped, tapped ? @"zona card" : @"tap rifiutato");
-		MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoRunSecondTap(); });
+		void (^tap)(void) = ^{
+			MiaoRunTapChosen(@"video-2", gRunTapTries > 1 ? 1 : 0, ^(BOOL tapped) {
+				MiaoStepResult(@"tap-video-2", tapped,
+					tapped ? @"stessa card" : @"tap rifiutato");
+				MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoRunSecondTap(); });
+			});
+		};
+		/* Chiudendo l'ad la pagina puo' essere tornata su: la card va ritrovata,
+		   altrimenti il tap cade nel vuoto e riapre solo il popunder. */
+		if (gRunThumb >= 0) {
+			MiaoScrollToThumb(gRunThumb, 0, ^(BOOL ok, NSString *raw) {
+				(void)ok;
+				(void)raw;
+				MiaoAfter(MiaoHumanDelay(0.4, 0.6), tap);
+			});
+			return;
+		}
+		tap();
 	});
 }
 
@@ -3078,27 +3094,50 @@ static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
 	});
 }
 
-static void MiaoRunTapHomeCard(NSInteger which) {
-	MiaoToast(@"Click video");
-	BOOL tapped = MiaoTapPt(MiaoPtThumb(which), @"video-1");
-	MiaoStepResult(@"tap-video", tapped,
-		[NSString stringWithFormat:@"card %ld %@", (long)which,
-			tapped ? @"ok" : @"rifiutato"]);
-	if (!tapped && which == 0) {
-		MiaoAfter(MiaoHumanDelay(0.6, 0.5), ^{ MiaoRunTapHomeCard(1); });
+/**
+ Tocca il video scelto sul link vero: rect dal DOM, elementFromPoint verificato,
+ punto casuale dentro la card. Le zone restano solo come ultima spiaggia: da
+ sole cadevano tra due card, aprivano il popunder e il video non si apriva mai.
+ */
+static void MiaoRunTapChosen(NSString *label, NSInteger zone, void (^done)(BOOL tapped)) {
+	if (gRunThumb < 0) {
+		BOOL z = MiaoTapPt(MiaoPtThumb(zone), label);
+		if (done) done(z);
 		return;
 	}
-	if (!tapped) {
-		MiaoRunContinueToVideo(@"primo tap non partito");
-		return;
-	}
-	MiaoAfter(MiaoHumanDelay(3.0, 1.4), ^{
-		if (!MiaoFrontIsVideo() && !MiaoForeignFront() && which == 0) {
-			MiaoStepResult(@"tap-video", NO, @"non aperto, riprovo card sotto");
-			MiaoRunTapHomeCard(1);
+	MiaoTapThumb(gRunThumb, label, ^(BOOL tapped) {
+		if (tapped) {
+			if (done) done(YES);
 			return;
 		}
-		MiaoRunAfterFirstTap();
+		MiaoLog(@"thumb: link non tappabile, ricado sulla zona");
+		BOOL z = MiaoTapPt(MiaoPtThumb(zone), label);
+		if (done) done(z);
+	});
+}
+
+static void MiaoRunTapHomeCard(NSInteger which) {
+	MiaoToast(@"Click video");
+	MiaoRunTapChosen(@"video-1", which, ^(BOOL tapped) {
+		MiaoStepResult(@"tap-video", tapped,
+			[NSString stringWithFormat:@"thumb %ld %@", (long)gRunThumb,
+				tapped ? @"ok" : @"rifiutato"]);
+		if (!tapped && which == 0) {
+			MiaoAfter(MiaoHumanDelay(0.6, 0.5), ^{ MiaoRunTapHomeCard(1); });
+			return;
+		}
+		if (!tapped) {
+			MiaoRunContinueToVideo(@"primo tap non partito");
+			return;
+		}
+		MiaoAfter(MiaoHumanDelay(3.0, 1.4), ^{
+			if (!MiaoFrontIsVideo() && !MiaoForeignFront() && which == 0) {
+				MiaoStepResult(@"tap-video", NO, @"non aperto, riprovo");
+				MiaoRunTapHomeCard(1);
+				return;
+			}
+			MiaoRunAfterFirstTap();
+		});
 	});
 }
 
@@ -3122,13 +3161,29 @@ static void MiaoRunPickAndTap(void) {
 			(void)back;
 			MiaoAfter(MiaoHumanDelay(1.1, 0.8), ^{
 				if (MiaoFrontIsVideo()) {
+					/* Sotto il player ci sono le correlate: sono link /video/
+					   come quelli della home, quindi si scelgono allo stesso
+					   modo invece di tirare a indovinare la seconda card. */
 					MiaoToast(@"Correlato…");
-					MiaoGestureScroll(200 + (CGFloat)(MiaoRng() * 80), ^{
-						MiaoAfter(MiaoHumanDelay(0.5, 0.5), ^{
-							BOOL tapped = MiaoTapPt(MiaoPtThumb(1), @"video-rel");
-							MiaoStepResult(@"tap-video", tapped, @"correlata sotto player");
-							MiaoAfter(MiaoHumanDelay(2.8, 1.4), ^{
-								MiaoRunAfterFirstTap();
+					MiaoPickThumb(^(NSInteger idx) {
+						gRunThumb = idx;
+						if (idx < 0) {
+							MiaoRunContinueToVideo(@"nessuna correlata sotto il player");
+							return;
+						}
+						MiaoScrollToThumb(idx, 0, ^(BOOL ok, NSString *raw) {
+							(void)raw;
+							if (!ok) {
+								MiaoRunContinueToVideo(@"correlata non raggiunta");
+								return;
+							}
+							MiaoAfter(MiaoHumanDelay(0.5, 0.5), ^{
+								MiaoRunTapChosen(@"video-rel", 1, ^(BOOL tapped) {
+									MiaoStepResult(@"tap-video", tapped, @"correlata sotto player");
+									MiaoAfter(MiaoHumanDelay(2.8, 1.4), ^{
+										MiaoRunAfterFirstTap();
+									});
+								});
 							});
 						});
 					});
@@ -3139,14 +3194,29 @@ static void MiaoRunPickAndTap(void) {
 		});
 		return;
 	}
-	/* Un passaggio solo: due flick + tap basso (curioso) uscivano dalla card. */
-	NSInteger passes = 1;
+	/* Una passata di sguardo, poi si sceglie un link /video/ vero e ci si arriva
+	   correggendo il tiro a ogni swipe. Il flick alla cieca + tap a zone era la
+	   causa del giro "ad, torno al sito, ad": il tocco cadeva fuori dalla card,
+	   il popunder partiva comunque e il video non si apriva mai. */
 	MiaoToast(@"Scroll…");
-	MiaoExploreHome(passes, ^{
-		MiaoStepResult(@"scroll", YES,
-			[NSString stringWithFormat:@"mood=%ld passes=%ld", (long)gMood, (long)passes]);
-		MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{
-			MiaoRunTapHomeCard(0);
+	MiaoExploreHome(1, ^{
+		MiaoPickThumb(^(NSInteger idx) {
+			if (idx < 0) {
+				MiaoStepResult(@"scroll", NO, @"nessun link /video/ in pagina");
+				MiaoRunContinueToVideo(@"nessun video in pagina");
+				return;
+			}
+			gRunThumb = idx;
+			MiaoScrollToThumb(idx, 0, ^(BOOL ok, NSString *raw) {
+				MiaoStepResult(@"scroll", ok,
+					[NSString stringWithFormat:@"mood=%ld thumb=%ld %@",
+						(long)gMood, (long)idx, raw ?: @""]);
+				if (!ok) {
+					MiaoRunContinueToVideo(@"card non raggiunta");
+					return;
+				}
+				MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunTapHomeCard(0); });
+			});
 		});
 	});
 }
@@ -3341,7 +3411,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.16 niente-openURL-a-ogni-ciclo");
+	MiaoLog(@"safari ready 0.14.17 tap-sul-link-video-vero");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3501,7 +3571,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.16 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.17 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3602,7 +3672,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.16 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.17 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
