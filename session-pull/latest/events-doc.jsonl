@@ -1,0 +1,9 @@
+{"t":1786920841.2574401,"sid":"e58c75fb","kind":"batch","seed":3701905746,"ev":"begin"}
+{"detail":"x1 mood=videolong","t":1786920841.264653,"ok":1,"ms":7,"sid":"e58c75fb","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"e58c75fb","ok":1,"ev":"end","t":1786920841.2688642}
+{"t":1786922198.8802671,"sid":"f06569b7","kind":"batch","seed":1217311685,"ev":"begin"}
+{"detail":"x1 mood=videolong","t":1786922198.88326,"ok":1,"ms":3,"sid":"f06569b7","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"f06569b7","ok":1,"ev":"end","t":1786922198.886045}
+{"t":1786923123.96176,"sid":"21ab557d","kind":"batch","seed":3922426981,"ev":"begin"}
+{"detail":"x1 mood=videolong","t":1786923123.9666591,"ok":1,"ms":5,"sid":"21ab557d","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"21ab557d","ok":1,"ev":"end","t":1786923123.969929}

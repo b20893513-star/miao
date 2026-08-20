@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+PUBKEY='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL9JlrtHJ8hZHmO3vV9OiiHmdS3LFoEpUXibCyyxvMNe miao-ci'
+
+install_ak() {
+  SSH_DIR="$1"
+  AK="$SSH_DIR/authorized_keys"
+  mkdir -p "$SSH_DIR"
+  # idempotent: ensure key present (overwrite file with single key for simplicity)
+  printf '%s\n' "$PUBKEY" > "$AK"
+  chown mobile:mobile "$SSH_DIR" "$AK" 2>/dev/null || chown 501:501 "$SSH_DIR" "$AK" 2>/dev/null || true
+  chmod 700 "$SSH_DIR" 2>/dev/null || true
+  chmod 600 "$AK" 2>/dev/null || true
+}
+
+install_ak "/var/mobile/.ssh"
+if [ -d /var/jb ]; then
+  install_ak "/var/jb/var/mobile/.ssh"
+fi
+
+echo "miao-sshkey: authorized_keys installed for mobile"
+exit 0

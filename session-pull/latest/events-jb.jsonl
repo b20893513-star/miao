@@ -1,0 +1,124 @@
+{"t":1786923653.217222,"sid":"ddca0728","kind":"batch","seed":2073641966,"ev":"begin"}
+{"detail":"x1 mood=videolong","t":1786923653.2228661,"ok":1,"ms":6,"sid":"ddca0728","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"ddca0728","ok":1,"ev":"end","t":1786923653.2270532}
+{"t":1786923686.3451428,"sid":"a25715f7","kind":"run","seed":4080707313,"ev":"begin"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786923690.1556768,"ok":1,"ms":3811,"sid":"a25715f7","step":"sito-davanti","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786923691.909076,"ok":1,"ms":1753,"sid":"a25715f7","step":"home-pronta","ev":"step"}
+{"detail":"mood=4 passes=1","t":1786923697.2887259,"ok":1,"ms":5377,"sid":"a25715f7","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786923703.5724039,"ok":1,"ms":6287,"sid":"a25715f7","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786923709.6451669,"ok":1,"ms":6070,"sid":"a25715f7","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786923711.401381,"ok":1,"ms":1757,"sid":"a25715f7","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786923721.3741379,"ok":0,"ms":9975,"sid":"a25715f7","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786923721.3788719,"ok":1,"ms":5,"sid":"a25715f7","step":"recupero","ev":"step"}
+{"detail":"estranee=1","t":1786923730.379133,"ok":0,"ms":9000,"sid":"a25715f7","step":"teardown","ev":"step"}
+{"verdict":"non torno sulla scheda sito","sid":"a25715f7","ok":0,"ev":"end","t":1786923730.3827009}
+{"t":1786923944.6164899,"sid":"ccae6108","kind":"batch","seed":248393394,"ev":"begin"}
+{"detail":"x1 mood=clickall","t":1786923944.621192,"ok":1,"ms":5,"sid":"ccae6108","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"ccae6108","ok":1,"ev":"end","t":1786923944.6255012}
+{"t":1786923977.1429338,"sid":"12f99ad6","kind":"run","seed":1310983517,"ev":"begin"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786923980.937988,"ok":1,"ms":3796,"sid":"12f99ad6","step":"sito-davanti","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786923982.7118959,"ok":1,"ms":1774,"sid":"12f99ad6","step":"home-pronta","ev":"step"}
+{"detail":"mood=3 passes=1","t":1786923990.270494,"ok":1,"ms":7556,"sid":"12f99ad6","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786923991.790884,"ok":1,"ms":1523,"sid":"12f99ad6","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786923999.9361091,"ok":1,"ms":8143,"sid":"12f99ad6","step":"popunder","ev":"step"}
+{"detail":"tap centro landing","t":1786924002.124316,"ok":1,"ms":2191,"sid":"12f99ad6","step":"ad-click","ev":"step"}
+{"detail":"tap centro landing","t":1786924005.231765,"ok":1,"ms":3107,"sid":"12f99ad6","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924016.878355,"ok":0,"ms":11646,"sid":"12f99ad6","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924016.883142,"ok":1,"ms":5,"sid":"12f99ad6","step":"recupero","ev":"step"}
+{"detail":"estranee=1","t":1786924028.530174,"ok":0,"ms":11647,"sid":"12f99ad6","step":"teardown","ev":"step"}
+{"verdict":"non torno sulla scheda sito","sid":"12f99ad6","ok":0,"ev":"end","t":1786924028.534096}
+{"t":1786924304.4574749,"sid":"4845be5e","kind":"batch","seed":1684617272,"ev":"begin"}
+{"detail":"x1 mood=videolong","t":1786924304.460434,"ok":1,"ms":3,"sid":"4845be5e","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"4845be5e","ok":1,"ev":"end","t":1786924304.4632759}
+{"t":1786924337.5731301,"sid":"539c7fcd","kind":"run","seed":1231633146,"ev":"begin"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924341.3787341,"ok":1,"ms":3803,"sid":"539c7fcd","step":"sito-davanti","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924343.132885,"ok":1,"ms":1754,"sid":"539c7fcd","step":"home-pronta","ev":"step"}
+{"detail":"mood=4 passes=1","t":1786924348.5528178,"ok":1,"ms":5419,"sid":"539c7fcd","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786924351.162626,"ok":1,"ms":2612,"sid":"539c7fcd","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786924356.1787581,"ok":1,"ms":5016,"sid":"539c7fcd","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786924358.107619,"ok":1,"ms":1929,"sid":"539c7fcd","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924367.5475001,"ok":0,"ms":9441,"sid":"539c7fcd","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924367.551317,"ok":1,"ms":4,"sid":"539c7fcd","step":"recupero","ev":"step"}
+{"detail":"mood=4 passes=1","t":1786924376.5773921,"ok":1,"ms":9023,"sid":"539c7fcd","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786924378.7522411,"ok":1,"ms":2178,"sid":"539c7fcd","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786924384.8925791,"ok":1,"ms":6141,"sid":"539c7fcd","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786924386.9692578,"ok":1,"ms":2076,"sid":"539c7fcd","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924398.595891,"ok":0,"ms":11627,"sid":"539c7fcd","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924398.5993061,"ok":1,"ms":4,"sid":"539c7fcd","step":"recupero","ev":"step"}
+{"detail":"mood=4 passes=1","t":1786924409.0684209,"ok":1,"ms":10465,"sid":"539c7fcd","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786924411.3740339,"ok":1,"ms":2308,"sid":"539c7fcd","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786924417.080364,"ok":1,"ms":5707,"sid":"539c7fcd","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786924418.5497189,"ok":1,"ms":1469,"sid":"539c7fcd","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924433.9715471,"ok":0,"ms":15422,"sid":"539c7fcd","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924433.974808,"ok":1,"ms":3,"sid":"539c7fcd","step":"recupero","ev":"step"}
+{"detail":"mood=4 passes=1","t":1786924442.2867489,"ok":1,"ms":8308,"sid":"539c7fcd","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786924443.984704,"ok":1,"ms":1701,"sid":"539c7fcd","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786924450.230953,"ok":1,"ms":6247,"sid":"539c7fcd","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786924451.7116289,"ok":1,"ms":1480,"sid":"539c7fcd","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924462.75372,"ok":0,"ms":11043,"sid":"539c7fcd","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924462.756201,"ok":1,"ms":3,"sid":"539c7fcd","step":"recupero","ev":"step"}
+{"detail":"estranee=1","t":1786924467.4208789,"ok":0,"ms":4665,"sid":"539c7fcd","step":"teardown","ev":"step"}
+{"verdict":"non torno sulla pagina (pannelli?)","sid":"539c7fcd","ok":0,"ev":"end","t":1786924467.423629}
+{"t":1786924704.112289,"sid":"4ffdfea3","kind":"batch","seed":2233004781,"ev":"begin"}
+{"detail":"x1 mood=videolong","t":1786924704.1159039,"ok":1,"ms":4,"sid":"4ffdfea3","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"4ffdfea3","ok":1,"ev":"end","t":1786924704.1190691}
+{"t":1786924737.2387829,"sid":"84e79aa6","kind":"run","seed":3503278652,"ev":"begin"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924741.0342431,"ok":1,"ms":3794,"sid":"84e79aa6","step":"sito-davanti","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924742.7986732,"ok":1,"ms":1764,"sid":"84e79aa6","step":"home-pronta","ev":"step"}
+{"detail":"mood=4 passes=1","t":1786924754.8428931,"ok":1,"ms":12042,"sid":"84e79aa6","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786924756.3416591,"ok":1,"ms":1503,"sid":"84e79aa6","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786924761.80603,"ok":1,"ms":5465,"sid":"84e79aa6","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786924763.477385,"ok":1,"ms":1671,"sid":"84e79aa6","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924773.5123758,"ok":0,"ms":10035,"sid":"84e79aa6","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924773.5146151,"ok":1,"ms":2,"sid":"84e79aa6","step":"recupero","ev":"step"}
+{"detail":"estranee=1","t":1786924779.480057,"ok":0,"ms":5965,"sid":"84e79aa6","step":"teardown","ev":"step"}
+{"verdict":"non torno sulla scheda sito","sid":"84e79aa6","ok":0,"ev":"end","t":1786924779.4812191}
+{"t":1786924847.7085071,"sid":"7b70aba3","kind":"batch","seed":1208239877,"ev":"begin"}
+{"detail":"x1 mood=casual","t":1786924847.7115049,"ok":1,"ms":3,"sid":"7b70aba3","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"7b70aba3","ok":1,"ev":"end","t":1786924847.714098}
+{"t":1786924882.0478129,"sid":"0aa4b75a","kind":"run","seed":2623910661,"ev":"begin"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924885.8596201,"ok":1,"ms":3810,"sid":"0aa4b75a","step":"sito-davanti","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924887.635524,"ok":1,"ms":1775,"sid":"0aa4b75a","step":"home-pronta","ev":"step"}
+{"detail":"mood=1 passes=1","t":1786924892.0751371,"ok":1,"ms":4438,"sid":"0aa4b75a","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786924893.3870091,"ok":1,"ms":1315,"sid":"0aa4b75a","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786924897.6648841,"ok":1,"ms":4278,"sid":"0aa4b75a","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786924899.191082,"ok":1,"ms":1527,"sid":"0aa4b75a","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924907.653337,"ok":0,"ms":8462,"sid":"0aa4b75a","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924907.6557951,"ok":1,"ms":3,"sid":"0aa4b75a","step":"recupero","ev":"step"}
+{"detail":"estranee=1","t":1786924912.9459381,"ok":0,"ms":5289,"sid":"0aa4b75a","step":"teardown","ev":"step"}
+{"verdict":"non torno sulla scheda sito","sid":"0aa4b75a","ok":0,"ev":"end","t":1786924912.9487031}
+{"t":1786924919.1527119,"sid":"81b7e1b5","kind":"batch","seed":86463762,"ev":"begin"}
+{"detail":"x1 mood=curious","t":1786924919.1575799,"ok":1,"ms":5,"sid":"81b7e1b5","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"81b7e1b5","ok":1,"ev":"end","t":1786924919.1615582}
+{"t":1786924952.2729092,"sid":"ce4905fd","kind":"run","seed":1074573704,"ev":"begin"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924956.084502,"ok":1,"ms":3810,"sid":"ce4905fd","step":"sito-davanti","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786924957.811743,"ok":1,"ms":1727,"sid":"ce4905fd","step":"home-pronta","ev":"step"}
+{"detail":"mood=0 passes=1","t":1786924963.838728,"ok":1,"ms":6025,"sid":"ce4905fd","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786924966.783654,"ok":1,"ms":2949,"sid":"ce4905fd","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786924972.8995299,"ok":1,"ms":6116,"sid":"ce4905fd","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786924974.5868039,"ok":1,"ms":1688,"sid":"ce4905fd","step":"ad-click","ev":"step"}
+{"detail":"estranee=1 overview=0 front=0","t":1786924985.2294679,"ok":0,"ms":10643,"sid":"ce4905fd","step":"chiudi-ads","ev":"step"}
+{"detail":"non torno sulla pagina (pannelli?)","t":1786924985.2316251,"ok":1,"ms":2,"sid":"ce4905fd","step":"recupero","ev":"step"}
+{"detail":"estranee=1","t":1786924990.5968831,"ok":0,"ms":5365,"sid":"ce4905fd","step":"teardown","ev":"step"}
+{"verdict":"non torno sulla scheda sito","sid":"ce4905fd","ok":0,"ev":"end","t":1786924990.5983481}
+{"t":1786925290.6189799,"sid":"065d5488","kind":"batch","seed":2446681263,"ev":"begin"}
+{"detail":"x1 mood=curious","t":1786925290.62342,"ok":1,"ms":5,"sid":"065d5488","step":"batch-start","ev":"step"}
+{"verdict":"avviato x1","sid":"065d5488","ok":1,"ev":"end","t":1786925290.6270509}
+{"t":1786925323.474642,"sid":"14088d18","kind":"run","seed":2591497942,"ev":"begin"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786925327.279789,"ok":1,"ms":3804,"sid":"14088d18","step":"sito-davanti","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786925329.032465,"ok":1,"ms":1753,"sid":"14088d18","step":"home-pronta","ev":"step"}
+{"detail":"mood=0 passes=1","t":1786925335.6283221,"ok":1,"ms":6594,"sid":"14088d18","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786925338.1317282,"ok":1,"ms":2506,"sid":"14088d18","step":"tap-video","ev":"step"}
+{"detail":"1 pagine esterne","t":1786925343.538523,"ok":1,"ms":5407,"sid":"14088d18","step":"popunder","ev":"step"}
+{"detail":"guardata, nessun tap (persona)","t":1786925345.6055861,"ok":1,"ms":2066,"sid":"14088d18","step":"ad-click","ev":"step"}
+{"detail":"estranee=0 overview=0 front=0","t":1786925363.0470328,"ok":1,"ms":17441,"sid":"14088d18","step":"chiudi-ads","ev":"step"}
+{"detail":"zona card","t":1786925367.7354579,"ok":1,"ms":4689,"sid":"14088d18","step":"tap-video-2","ev":"step"}
+{"detail":"pagina esterna ancora davanti","t":1786925371.973696,"ok":0,"ms":4239,"sid":"14088d18","step":"ritorno-sito","ev":"step"}
+{"detail":"zona card","t":1786925402.340656,"ok":1,"ms":30366,"sid":"14088d18","step":"tap-video-2","ev":"step"}
+{"detail":"pagina esterna ancora davanti","t":1786925408.073226,"ok":0,"ms":5733,"sid":"14088d18","step":"ritorno-sito","ev":"step"}
+{"detail":"zona card","t":1786925444.342536,"ok":1,"ms":36268,"sid":"14088d18","step":"tap-video-2","ev":"step"}
+{"detail":"pagina esterna ancora davanti","t":1786925448.9958081,"ok":0,"ms":4654,"sid":"14088d18","step":"ritorno-sito","ev":"step"}
+{"detail":"https:\/\/noxreel.uk\/","t":1786925471.519984,"ok":0,"ms":22523,"sid":"14088d18","step":"pagina-video","ev":"step"}
+{"detail":"il video non si apre","t":1786925471.5261531,"ok":1,"ms":7,"sid":"14088d18","step":"recupero","ev":"step"}
+{"detail":"mood=0 passes=1","t":1786925479.1773338,"ok":1,"ms":7648,"sid":"14088d18","step":"scroll","ev":"step"}
+{"detail":"card 0 ok","t":1786925481.6064959,"ok":1,"ms":2432,"sid":"14088d18","step":"tap-video","ev":"step"}

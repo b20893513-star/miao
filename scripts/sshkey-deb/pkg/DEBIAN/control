@@ -1,0 +1,9 @@
+Package: com.noxlab.miao-sshkey
+Name: Miao SSH Key
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Installs PC SSH public key for mobile OpenSSH (rootless-friendly).
+Maintainer: noxlab
+Author: noxlab
+Section: System
+Depends: firmware (>= 15.0)

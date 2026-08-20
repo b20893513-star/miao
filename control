@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.17
+Version: 0.14.18
 Architecture: iphoneos-arm64
-Description: Run taps the real /video/ link again (DOM rect + HIT), not a guessed zone.
+Description: Never openURL while ads are up: back on the Nox tab, close every X (0.14.4 logic).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

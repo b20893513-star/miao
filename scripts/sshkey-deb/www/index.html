@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Miao SSH Key</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f1419; color: #e7ecf1; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  main { max-width: 420px; width: 90%; text-align: center; }
+  h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+  p { opacity: 0.75; margin: 0 0 1.5rem; font-size: 0.95rem; }
+  a.btn { display: block; padding: 1.1rem 1.2rem; margin: 0.75rem 0; border-radius: 12px; text-decoration: none; font-weight: 700; font-size: 1.05rem; }
+  a.deb { background: #2dd4a8; color: #062018; }
+  a.key { background: #3b82f6; color: #fff; }
+  .hint { font-size: 0.8rem; opacity: 0.6; margin-top: 1.25rem; line-height: 1.4; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Miao — chiave SSH</h1>
+  <p>Installa la chiave del PC sull&apos;iPhone (Filza / dpkg).</p>
+  <a class="btn deb" href="miao-sshkey.deb">Scarica miao-sshkey.deb</a>
+  <a class="btn key" href="authorized_keys">Scarica authorized_keys</a>
+  <p class="hint">Filza: apri il .deb → Installa → poi Userspace Reboot se serve.<br/>Oppure copia authorized_keys in /var/mobile/.ssh/</p>
+</main>
+</body>
+</html>
