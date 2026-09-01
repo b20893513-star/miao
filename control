@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.19
+Version: 0.14.20
 Architecture: iphoneos-arm64
-Description: Opens NoxReel when no tab exists, resumes the existing tab when it does.
+Description: Ad tabs really close now (window.close + tab API), and no more dead end in tab overview.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

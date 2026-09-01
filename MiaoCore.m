@@ -2164,6 +2164,46 @@ static void MiaoLeaveTabGrid(NSInteger tries, void (^done)(BOOL onSite)) {
 }
 
 /**
+ Uscita di forza dai pannelli, quando Fine e le miniature non rispondono.
+
+ Senza questa via il run muore nella griglia: nei log erano cicli interi di
+ "scroll ko non sulla pagina (pannelli)" seguiti da "sito-davanti ko". Prima si
+ chiudono le schede estranee dall'API, cosi' in griglia resta la sola card di
+ Nox e la miniatura da toccare e' una sola; se anche quello non basta si riapre
+ la home. Qui openURL e' accettabile: la griglia bloccata costa l'intera
+ sessione, una scheda in piu' costa un ciclo.
+ */
+static void MiaoForceLeaveOverview(void (^done)(BOOL ok)) {
+	if (!MiaoInTabOverview()) {
+		if (done) done(MiaoSiteIsFront());
+		return;
+	}
+	if (MiaoForeignTabCount() > 0) MiaoCloseNonNoxTabs();
+	MiaoAfter(MiaoBetween(0.6, 1.0), ^{
+		MiaoLeaveTabGrid(0, ^(BOOL onSite) {
+			if (onSite && !MiaoInTabOverview()) {
+				if (done) done(YES);
+				return;
+			}
+			MiaoLog(@"pannelli bloccati: riapro la home");
+			MiaoToast(@"Riapro il sito");
+			MiaoOpenURL(MiaoHomeURL());
+			MiaoAfter(3.2, ^{
+				if (MiaoInTabOverview()) {
+					MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
+					if (fine) MiaoTapNode(fine, @"fine-forza");
+				}
+				MiaoAfter(1.2, ^{
+					BOOL ok = MiaoSiteIsFront() && !MiaoInTabOverview();
+					MiaoLog([NSString stringWithFormat:@"uscita forzata pannelli %d", ok]);
+					if (done) done(ok);
+				});
+			});
+		});
+	});
+}
+
+/**
  Siamo in modalita' navigazione (pagina piena), non nella griglia.
  Se siamo in overview esce; non apre di nuovo Schede (quello peggiora lo stato).
  Se davanti c'e' un ad, restituisce NO: il recupero ads e' compito di
@@ -2178,24 +2218,11 @@ static void MiaoEnsureBrowsing(void (^done)(BOOL ok)) {
 		MiaoToast(@"Esco dai pannelli");
 		MiaoReturnToSiteTab(^(BOOL ok) {
 			MiaoLog([NSString stringWithFormat:@"browsing via scheda sito %d", ok]);
-			if (ok || MiaoSiteTabExists()) {
-				if (done) done(ok);
+			if (ok) {
+				if (done) done(YES);
 				return;
 			}
-			/* Nessuna scheda Nox in giro: qui aprirla e' l'unica via. */
-			MiaoToast(@"Apro il sito");
-			MiaoOpenURL(MiaoHomeURL());
-			MiaoAfter(3.2, ^{
-				if (MiaoInTabOverview()) {
-					MiaoAXNode *f2 = MiaoAXFind(MiaoNamesDone());
-					if (f2) MiaoTapNode(f2, @"fine-url");
-					MiaoAfter(1.1, ^{
-						if (done) done(MiaoSiteIsFront() && !MiaoInTabOverview());
-					});
-					return;
-				}
-				if (done) done(MiaoSiteIsFront() && !MiaoInTabOverview());
-			});
+			MiaoForceLeaveOverview(^(BOOL out) { if (done) done(out); });
 		});
 		return;
 	}
@@ -2203,7 +2230,7 @@ static void MiaoEnsureBrowsing(void (^done)(BOOL ok)) {
 	if (done) done(NO);
 }
 
-/// Ultimo tentativo: Fine / scheda Nox / API schede — niente openURL (nuovi pop).
+/// Ultimo tentativo: scheda Nox, Fine, e in fondo l'uscita di forza.
 static void MiaoRecoverFromOverview(void (^done)(BOOL ok)) {
 	if (MiaoSiteIsFront() && !MiaoInTabOverview()) {
 		if (done) done(YES);
@@ -2218,7 +2245,13 @@ static void MiaoRecoverFromOverview(void (^done)(BOOL ok)) {
 		MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
 		if (fine) MiaoTapNode(fine, @"fine-rec");
 		MiaoAfter(1.2, ^{
-			MiaoReturnToSiteTab(done);
+			MiaoReturnToSiteTab(^(BOOL ok2) {
+				if (ok2) {
+					if (done) done(YES);
+					return;
+				}
+				MiaoForceLeaveOverview(done);
+			});
 		});
 	});
 }
@@ -2402,7 +2435,8 @@ static void MiaoEnsureSiteFront(void (^done)(BOOL ok)) {
 
 /**
  Chiude le pagine ads dopo che l'impression e' stata registrata: prima con la UI
- di Safari, e solo se quella strada non porta a casa con `window.close()`.
+ di Safari, e solo se quella strada non porta a casa con `window.close()` e
+ l'API schede.
  */
 static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 	NSInteger before = MiaoForeignTabCount();
@@ -2411,25 +2445,47 @@ static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 		return;
 	}
 
-	void (^viaSafariUI)(void) = ^{
-		MiaoCloseAdTabNative(^(BOOL nativeOk) {
-			if (nativeOk && MiaoSiteIsFront() && !MiaoInTabOverview()) {
-				MiaoAck([NSString stringWithFormat:@"ads chiuse da Schede (%ld -> %ld)",
-					(long)before, (long)MiaoForeignTabCount()]);
-				if (done) done(YES);
-				return;
-			}
-			/* Niente window.close / openURL / Indietro: sull'ad l'indietro
-			   ricarica la pagina che l'ha aperto e i pop ripartono. Si torna
-			   solo sulla scheda Nox che e' gia' aperta. */
-			MiaoReturnToSiteTab(^(BOOL ok) {
-				if (done) done(ok && MiaoSiteIsFront() && !MiaoInTabOverview());
+	/* Niente openURL e niente Indietro: sull'ad l'indietro ricarica la pagina
+	   che l'ha aperto e i pop ripartono. Si torna sulla scheda Nox esistente. */
+	void (^finish)(void) = ^{
+		MiaoReturnToSiteTab(^(BOOL ok) {
+			if (done) done(ok && MiaoSiteIsFront() && !MiaoInTabOverview());
+		});
+	};
+
+	/**
+	 Rete di sicurezza quando la griglia non offre nessuna X da toccare.
+
+	 Con la sola UI di Safari la scheda ads restava aperta per tutto il run
+	 (nei log: estranee=1 a ogni giro, fino a teardown ko). `window.close()`
+	 funziona perche' il popunder e' stato aperto da uno script, e l'API schede
+	 chiude quel che resta. Girano sulla landing dell'ad, non su Nox, e a
+	 impression gia' registrata: per il sito non cambia niente.
+	 */
+	void (^viaCodice)(void) = ^{
+		MiaoCloseAdWebViews(^(NSInteger closed) {
+			MiaoLog([NSString stringWithFormat:@"ads: window.close su %ld", (long)closed]);
+			MiaoAfter(MiaoBetween(0.6, 1.1), ^{
+				if (MiaoForeignTabCount() > 0) MiaoCloseNonNoxTabs();
+				MiaoAfter(MiaoBetween(0.5, 0.9), ^{
+					MiaoAck([NSString stringWithFormat:@"ads chiuse da codice (%ld -> %ld)",
+						(long)before, (long)MiaoForeignTabCount()]);
+					finish();
+				});
 			});
 		});
 	};
 
 	/* Come a mano: quadrato Schede → X su tutte → tap sulla scheda del sito. */
-	viaSafariUI();
+	MiaoCloseAdTabNative(^(BOOL nativeOk) {
+		if (nativeOk && MiaoForeignTabCount() == 0
+			&& MiaoSiteIsFront() && !MiaoInTabOverview()) {
+			MiaoAck([NSString stringWithFormat:@"ads chiuse da Schede (%ld -> 0)", (long)before]);
+			if (done) done(YES);
+			return;
+		}
+		viaCodice();
+	});
 }
 
 #pragma mark - Loop ads
@@ -3496,7 +3552,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.19 apre-il-sito-se-manca-la-scheda");
+	MiaoLog(@"safari ready 0.14.20 chiude-davvero-le-ads");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3656,7 +3712,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.19 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.20 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3757,7 +3813,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.19 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.20 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
