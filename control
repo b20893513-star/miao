@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.20
+Version: 0.14.21
 Architecture: iphoneos-arm64
-Description: Ad tabs really close now (window.close + tab API), and no more dead end in tab overview.
+Description: When the ad steals the tab, go Back instead of reloading NoxReel (a fresh page re-arms the popunder).
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
