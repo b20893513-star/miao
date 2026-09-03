@@ -813,7 +813,12 @@ static BOOL MiaoTapPt(CGPoint pt, NSString *label) {
  "cerco qualcosa piu' in basso" e "sistemo la posizione", e insieme danno la
  quantita' di inerzia giusta: `window.scrollBy` non ne produce nessuna.
  */
+/// Vero quando l'ultimo scroll non e' nemmeno partito: senza una pagina piena
+/// a schermo non c'e' niente da trascinare, e insistere e' tempo buttato.
+static BOOL gScrollSkipped = NO;
+
 static void MiaoGestureScroll(CGFloat dy, void (^done)(void)) {
+	gScrollSkipped = YES;
 	if (MiaoInTabOverview()) {
 		MiaoLog(@"scroll rifiutato: Mostra pannelli");
 		if (done) done();
@@ -827,6 +832,7 @@ static void MiaoGestureScroll(CGFloat dy, void (^done)(void)) {
 		if (done) done();
 		return;
 	}
+	gScrollSkipped = NO;
 
 	BOOL flick = fabs(dy) > 380;
 	CGFloat travel = flick ? fabs(dy) * 0.42 : fabs(dy) * 0.92;
@@ -1432,6 +1438,14 @@ static void MiaoScrollToThumb(NSInteger idx, NSInteger tries, void (^done)(BOOL 
 			return;
 		}
 		MiaoGestureScroll(dy, ^{
+			/* Se il gesto non e' partito la pagina e' ferma, e riprovare non
+			   cambia niente: nel log 35 scroll saltati di fila, poi OFF e un
+			   recupero speso per nulla. Meglio dirlo subito a chi ha chiamato,
+			   che sa rimettere il sito davanti. */
+			if (gScrollSkipped) {
+				done(visible, [NSString stringWithFormat:@"%@|scroll fermo", r]);
+				return;
+			}
 			MiaoAfter(MiaoHumanDelay(0.2, 0.5), ^{ MiaoScrollToThumb(idx, tries + 1, done); });
 		});
 	});
@@ -2406,6 +2420,8 @@ static void MiaoGoBackHuman(void (^done)(BOOL ok)) {
  video. Indietro invece ripesca Nox dalla cache avanti/indietro: stessa pagina,
  script del popunder gia' scattato, e il tocco dopo apre davvero il video.
  */
+static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront));
+
 static void MiaoBackFromHijackedTab(void (^done)(BOOL ok)) {
 	MiaoToast(@"Indietro dall'ad");
 	MiaoGoBackHuman(^(BOOL back) {
@@ -2420,12 +2436,13 @@ static void MiaoBackFromHijackedTab(void (^done)(BOOL ok)) {
 				MiaoReturnToSiteTab(^(BOOL ok) { if (done) done(ok); });
 				return;
 			}
-			MiaoLog(@"scheda rubata: indietro fallito, riapro la home");
-			MiaoToast(@"Riapro il sito");
-			MiaoOpenURL(MiaoHomeURL());
-			MiaoAfter(3.2, ^{
-				if (done) done(MiaoSiteIsFront() && !MiaoInTabOverview());
-			});
+			/* Indietro non ha storia da percorrere: l'ad non ha preso la nostra
+			   scheda, e' una scheda nuova. Allora si chiude, e Nox torna davanti
+			   senza ricaricarsi. Riaprire la home qui era il giro infinito: nel
+			   log 23 openURL di fila, uno per ogni tentativo, e ogni home nuova
+			   ri-arma il popunder. */
+			MiaoLog(@"scheda rubata: niente storia indietro, chiudo l'ad");
+			MiaoCloseAdsHuman(^(BOOL front) { if (done) done(front); });
 		});
 	});
 }
@@ -2514,18 +2531,30 @@ static void MiaoCloseAdsHuman(void (^done)(BOOL siteFront)) {
 		return;
 	}
 
-	/* Nessuna scheda Nox rimasta: l'ad non e' un popunder in piu', si e' preso
-	   la nostra. Chiuderla ci lascerebbe senza sito, da riaprire da capo. */
-	if (!MiaoSiteTabExists()) {
-		MiaoBackFromHijackedTab(^(BOOL ok) { if (done) done(ok); });
-		return;
-	}
+	/* Qui NON si guarda se esiste una scheda Nox: Safari scarica la webview
+	   delle schede in secondo piano e le API schede su iOS 16 spesso tornano
+	   vuote, quindi "non c'e' nessuna scheda Nox" era falso quasi sempre. Su
+	   quella falsa risposta si finiva a riaprire la home a ogni giro. */
 
-	/* Niente openURL e niente Indietro: sull'ad l'indietro ricarica la pagina
-	   che l'ha aperto e i pop ripartono. Si torna sulla scheda Nox esistente. */
+	/* Si torna sulla scheda Nox che c'e' gia': ricaricarla ri-arma il popunder,
+	   ed e' proprio quello che vogliamo evitare. La home si riapre solo se dopo
+	   la chiusura non e' rimasta davvero nessuna pagina del sito. */
 	void (^finish)(void) = ^{
 		MiaoReturnToSiteTab(^(BOOL ok) {
-			if (done) done(ok && MiaoSiteIsFront() && !MiaoInTabOverview());
+			if (ok && MiaoSiteIsFront() && !MiaoInTabOverview()) {
+				if (done) done(YES);
+				return;
+			}
+			if (!MiaoSiteTabExists()) {
+				MiaoLog(@"ads chiuse ma nessuna pagina Nox: riapro la home");
+				MiaoToast(@"Riapro il sito");
+				MiaoOpenURL(MiaoHomeURL());
+				MiaoAfter(3.2, ^{
+					if (done) done(MiaoSiteIsFront() && !MiaoInTabOverview());
+				});
+				return;
+			}
+			if (done) done(NO);
 		});
 	};
 
@@ -3694,12 +3723,10 @@ static void MiaoRunStartOnSite(void) {
 			return;
 		}
 		if (!u.length || !MiaoIsSiteURL(u)) {
-			if (MiaoSiteTabExists()) {
-				MiaoRunContinueToVideo(@"scheda sito da riprendere");
-				return;
-			}
-			MiaoOpenURL(MiaoHomeURL());
-			MiaoAfter(MiaoHumanDelay(1.5, 1.0), start);
+			/* Il recupero chiude l'ad e riprende la scheda Nox; la home la
+			   riapre solo se non ne e' rimasta nessuna. Decidere qui in base a
+			   MiaoSiteTabExists() portava a ricaricare una home che c'era. */
+			MiaoRunContinueToVideo(@"pagina estranea davanti");
 			return;
 		}
 		start();
@@ -3792,7 +3819,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.23 pressione-lunga-sul-link");
+	MiaoLog(@"safari ready 0.14.24 chiudo-ad-non-riapro-home");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3952,7 +3979,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.23 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.24 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4053,7 +4080,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.23 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.24 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

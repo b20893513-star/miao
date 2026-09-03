@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.23
+Version: 0.14.24
 Architecture: iphoneos-arm64
-Description: Long-press the video link and open it from the menu: the site click handler never sees it.
+Description: Closes the ad tab instead of reopening the home, so the popunder never re-arms.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
