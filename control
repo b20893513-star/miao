@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.24
+Version: 0.14.25
 Architecture: iphoneos-arm64
-Description: Closes the ad tab instead of reopening the home, so the popunder never re-arms.
+Description: Each session starts clean: a fresh tab, or Safari closed and reopened.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
