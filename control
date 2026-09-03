@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.22
+Version: 0.14.23
 Architecture: iphoneos-arm64
-Description: Keeps trying until the popunder cap gives up, reachable cards, and Safari finally writes its own log.
+Description: Long-press the video link and open it from the menu: the site click handler never sees it.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

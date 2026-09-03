@@ -1823,6 +1823,20 @@ static BOOL MiaoSelectSiteTab(void) {
 	return NO;
 }
 
+/// Porta davanti la scheda del video: "Apri in una nuova scheda" su iOS la
+/// apre in secondo piano, quindi a schermo resta la home.
+static BOOL MiaoSelectVideoTab(void) {
+	id bc = MiaoBrowser();
+	for (id tab in MiaoTabList(bc)) {
+		if (!MiaoURLIsVideo(MiaoTabURL(tab))) continue;
+		if (MiaoSelectTab(bc, tab)) {
+			MiaoLog(@"scheda video in primo piano");
+			return YES;
+		}
+	}
+	return NO;
+}
+
 /**
  C'e' una scheda NoxReel da riprendere, anche in secondo piano?
 
@@ -1934,6 +1948,14 @@ static NSArray<NSString *> *MiaoNamesClose(void) {
 
 static NSArray<NSString *> *MiaoNamesBack(void) {
 	return @[ @"Indietro", @"Back", @"BackButton" ];
+}
+
+/// Voci del menu che compare tenendo premuto un link.
+static NSArray<NSString *> *MiaoNamesOpenNewTab(void) {
+	return @[ @"Apri in una nuova scheda", @"Apri in nuova scheda",
+			  @"Open in New Tab", @"Apri link in una nuova scheda",
+			  @"Open Link in New Tab", @"Apri in background",
+			  @"Open in Background" ];
 }
 
 static NSArray<NSString *> *MiaoNamesDone(void) {
@@ -2703,6 +2725,10 @@ static NSInteger gRunRescueTries = 0;
  */
 static NSString *gRunPageId = nil;
 
+/// URL del video scelto. Dopo un ricaricamento l'indice della thumb puo'
+/// puntare a un altro video: l'indirizzo no.
+static NSString *gRunHref = nil;
+
 static void MiaoPageDelta(void (^done)(NSString *state)) {
 	NSString *js = @"(function(){try{if(!window.__miaoPv)window.__miaoPv="
 					"String(Date.now())+'.'+String(Math.random()).slice(2,8);"
@@ -2727,6 +2753,7 @@ static void MiaoRunWatchThenEnd(NSString *msg);
 static void MiaoRunNextOrEnd(NSString *msg);
 static void MiaoRunStartOnSite(void);
 static void MiaoRunTapChosen(NSString *label, NSInteger zone, void (^done)(BOOL tapped));
+static void MiaoOpenVideoLongPress(NSInteger idx, NSString *href, void (^done)(BOOL ok));
 
 /// Un passo con esito: finisce nel log leggibile e nel report del pannello.
 static void MiaoStepResult(NSString *name, BOOL ok, NSString *detail) {
@@ -2993,11 +3020,7 @@ static void MiaoRunEnd(NSString *msg, BOOL ok) {
 static void MiaoRunContinueToVideo(NSString *why) {
 	MiaoLog([NSString stringWithFormat:@"rescue %ld %@", (long)gRunRescueTries, why ?: @""]);
 	MiaoStepResult(@"recupero", YES, why ?: @"");
-	/* Il sito apre un popunder su quasi ogni tocco finche' non scatta il suo
-	   limite, poi il tap passa. Nei log il video si apriva al sesto-settimo
-	   giro, ma con tre soli recuperi il run era gia' finito KO: si arrendeva
-	   proprio quando stava per riuscire. */
-	if (gRunRescueTries++ >= 6) {
+	if (gRunRescueTries++ >= 4) {
 		MiaoRunEnd(why.length ? why : @"recupero esaurito", NO);
 		return;
 	}
@@ -3119,31 +3142,45 @@ static void MiaoRunSecondTap(void) {
 		MiaoAfter(MiaoHumanDelay(1.5, 1.0), ^{ MiaoRunWaitSkip(); });
 		return;
 	}
-	if (gRunTapTries++ > 4) {
+	/* Con la pressione lunga il video si apre al primo colpo: se non si apre
+	   in tre e' il gesto che non passa, e insistere allunga solo il run —
+	   l'ultima sessione e' andata in timeout a 520 s per questo. */
+	if (gRunTapTries++ > 2) {
 		MiaoStepResult(@"pagina-video", NO, MiaoWebViewURL(MiaoFrontWebView()));
 		MiaoRunContinueToVideo(@"il video non si apre");
 		return;
 	}
-	MiaoToast([NSString stringWithFormat:@"Ri-click video (%ld)", (long)gRunTapTries]);
+	MiaoToast([NSString stringWithFormat:@"Apro video (%ld)", (long)gRunTapTries]);
 	MiaoAfter(MiaoHumanDelay(0.5, 0.8), ^{
-		void (^tap)(void) = ^{
-			MiaoRunTapChosen(@"video-2", gRunTapTries > 1 ? 1 : 0, ^(BOOL tapped) {
-				MiaoStepResult(@"tap-video-2", tapped,
-					tapped ? @"stessa card" : @"tap rifiutato");
-				MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoRunSecondTap(); });
+		/* Niente secondo click sulla card: l'handler del sito lo trasforma in
+		   un altro ad, e al ritorno la home si ricarica e l'handler riparte.
+		   Si tiene premuto il link e si apre da menu. */
+		void (^open)(void) = ^{
+			if (gRunThumb < 0 && !gRunHref.length) {
+				MiaoRunTapChosen(@"video-2", gRunTapTries > 1 ? 1 : 0, ^(BOOL tapped) {
+					MiaoStepResult(@"tap-video-2", tapped,
+						tapped ? @"tap, nessun link noto" : @"tap rifiutato");
+					MiaoAfter(MiaoHumanDelay(3.0, 1.5), ^{ MiaoRunSecondTap(); });
+				});
+				return;
+			}
+			MiaoOpenVideoLongPress(gRunThumb, gRunHref, ^(BOOL ok) {
+				MiaoStepResult(@"apri-video", ok,
+					ok ? (gRunHref.length ? gRunHref : @"aperto") : @"menu e URL falliti");
+				MiaoAfter(MiaoHumanDelay(1.6, 1.0), ^{ MiaoRunSecondTap(); });
 			});
 		};
-		/* Chiudendo l'ad la pagina puo' essere tornata su: la card va ritrovata,
-		   altrimenti il tap cade nel vuoto e riapre solo il popunder. */
+		/* Chiudendo l'ad la pagina puo' essere tornata su: il link va ritrovato,
+		   altrimenti la pressione lunga cade nel vuoto. */
 		if (gRunThumb >= 0) {
 			MiaoScrollToThumb(gRunThumb, 0, ^(BOOL ok, NSString *raw) {
 				(void)ok;
 				(void)raw;
-				MiaoAfter(MiaoHumanDelay(0.4, 0.6), tap);
+				MiaoAfter(MiaoHumanDelay(0.4, 0.6), open);
 			});
 			return;
 		}
-		tap();
+		open();
 	});
 }
 
@@ -3317,6 +3354,83 @@ static void MiaoExploreHome(NSInteger left, void (^done)(void)) {
  punto casuale dentro la card. Le zone restano solo come ultima spiaggia: da
  sole cadevano tra due card, aprivano il popunder e il video non si apriva mai.
  */
+/**
+ Apre il video con pressione lunga sul link e "Apri in una nuova scheda".
+
+ Il ri-tap normale non ci arrivava mai. Dai log: il sito ha un handler sul
+ click che porta la nostra scheda sull'ad (`pagina=persa` subito dopo il tap),
+ e quando si torna indietro la home si ricarica (`pagina=ricaricata`), quindi
+ l'handler e' di nuovo armato e il tocco successivo riapre un ad. Cinque giri
+ di fila, sempre uguali.
+
+ La pressione lunga non e' un click: apre il menu di Safari e la voce carica
+ l'URL del link senza che la pagina veda niente. E' anche quello che fa una
+ persona quando un sito le apre pubblicita' a ogni tocco. L'impression dell'ad
+ resta comunque, perche' l'ha gia' prodotta il primo tap.
+ */
+static void MiaoOpenVideoLongPress(NSInteger idx, NSString *href, void (^done)(BOOL ok)) {
+	MiaoJS(MiaoJSThumbAt(idx), ^(NSString *r) {
+		NSArray *p = [r componentsSeparatedByString:@"|"];
+		CGPoint vp = p.count > 1 ? MiaoParseXY(p[1]) : CGPointZero;
+		NSString *link = (p.count > 3 && [p[3] length]) ? p[3] : (href ?: @"");
+
+		/* Senza punto valido resta la navigazione diretta: non e' il gesto di
+		   una persona, ma e' meglio di un altro giro a vuoto sull'ad. */
+		void (^viaURL)(void) = ^{
+			if (!link.length) {
+				if (done) done(NO);
+				return;
+			}
+			MiaoToast(@"Apro il video");
+			MiaoLog([NSString stringWithFormat:@"video via URL diretta %@", link]);
+			MiaoOpenURL(link);
+			MiaoAfter(MiaoBetween(2.4, 3.6), ^{ if (done) done(YES); });
+		};
+
+		id src = MiaoBestWebView();
+		if ((vp.x < 1 && vp.y < 1) || (MiaoIsSafari() && src && src != MiaoFrontWebView())) {
+			MiaoLog([NSString stringWithFormat:@"pressione lunga: punto non usabile (%@)", r ?: @"nil"]);
+			viaURL();
+			return;
+		}
+
+		MiaoCalLoad();
+		CGPoint win = MiaoViewportToWindowIn(src ?: MiaoFrontWebView(), vp);
+		win.x += gCalDX;
+		win.y += gCalDY;
+
+		NSString *why = nil;
+		/* from == to: il dito resta fermo per tutta la durata, che e' esattamente
+		   una pressione lunga. Oltre 0.5 s iOS apre il menu del link. */
+		BOOL held = MiaoUIKitSwipe(win, win, 0.95 + MiaoRnd() * 0.35, &why, nil);
+		MiaoLog([NSString stringWithFormat:@"pressione lunga %@ (%@) su %.0f,%.0f",
+			held ? @"ok" : @"NO", why ?: @"-", win.x, win.y]);
+
+		MiaoAfter(MiaoBetween(1.0, 1.6), ^{
+			MiaoAXNode *item = MiaoAXFind(MiaoNamesOpenNewTab());
+			if (!item || !MiaoTapNode(item, @"apri-nuova-scheda")) {
+				MiaoLog([NSString stringWithFormat:@"menu link: voce assente\n%@", MiaoAXDump()]);
+				MiaoAXNode *cancel = MiaoAXFind(@[ @"Annulla", @"Cancel" ]);
+				if (cancel) MiaoTapNode(cancel, @"annulla-menu");
+				MiaoAfter(MiaoBetween(0.5, 0.9), viaURL);
+				return;
+			}
+			MiaoAfter(MiaoBetween(2.2, 3.4), ^{
+				if (MiaoFrontIsVideo()) {
+					if (done) done(YES);
+					return;
+				}
+				/* Aperta in secondo piano: la si porta davanti. */
+				if (MiaoSelectVideoTab()) {
+					MiaoAfter(MiaoBetween(1.2, 2.0), ^{ if (done) done(MiaoFrontIsVideo()); });
+					return;
+				}
+				viaURL();
+			});
+		});
+	});
+}
+
 static void MiaoRunTapChosen(NSString *label, NSInteger zone, void (^done)(BOOL tapped)) {
 	if (gRunThumb < 0) {
 		BOOL z = MiaoTapPt(MiaoPtThumb(zone), label);
@@ -3429,6 +3543,8 @@ static void MiaoRunPickAndTap(void) {
 				MiaoStepResult(@"scroll", ok,
 					[NSString stringWithFormat:@"mood=%ld thumb=%ld %@",
 						(long)gMood, (long)idx, raw ?: @""]);
+				NSArray *rp = [(raw ?: @"") componentsSeparatedByString:@"|"];
+				if (rp.count > 3 && [rp[3] hasPrefix:@"http"]) gRunHref = rp[3];
 				void (^tap)(void) = ^{
 					MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunTapHomeCard(0); });
 				};
@@ -3443,6 +3559,8 @@ static void MiaoRunPickAndTap(void) {
 					MiaoScrollToThumb(0, 0, ^(BOOL ok2, NSString *raw2) {
 						MiaoStepResult(@"scroll", ok2,
 							[NSString stringWithFormat:@"ripiego thumb=0 %@", raw2 ?: @""]);
+						NSArray *rp2 = [(raw2 ?: @"") componentsSeparatedByString:@"|"];
+						if (rp2.count > 3 && [rp2[3] hasPrefix:@"http"]) gRunHref = rp2[3];
 						if (!ok2) {
 							MiaoRunContinueToVideo(@"card non raggiunta");
 							return;
@@ -3499,6 +3617,7 @@ static void MiaoActRun(void) {
 	gRunSecondVideo = NO;
 	gRunRescueTries = 0;
 	gRunPageId = nil;
+	gRunHref = nil;
 	MiaoToast(@"Run...");
 	MiaoReportBegin(@"run", 0);
 	MiaoPersonaBegin();
@@ -3673,7 +3792,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.22 non-si-arrende-prima-del-video");
+	MiaoLog(@"safari ready 0.14.23 pressione-lunga-sul-link");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3833,7 +3952,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.22 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.23 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3934,7 +4053,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.22 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.23 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
