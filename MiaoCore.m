@@ -239,11 +239,23 @@ static NSInteger MiaoParseMoodToken(NSString *tok) {
 	return -1;
 }
 
-/// 10 persone, mai due uguali di fila. Per la maratona 700.
+/**
+ Le persone della maratona 700, mai due uguali di fila (nemmeno a cavallo del
+ riavvolgimento).
+
+ Venti posti invece di dieci per far stare piu' gente che clicca: quattro
+ clickall (4-7 tap sulla landing) e quattro hunter (3-5 tap), cioe' 8 su 20
+ contro 2 su 10 di prima. Passa da circa un click per sessione a due.
+
+ Sui tempi non pesa: clickall ha due video e sta sopra la media, hunter ne ha
+ uno solo ed e' la persona piu' corta del mazzo, quindi in parti uguali si
+ compensano.
+ */
 static NSInteger MiaoMixMood(NSInteger idx) {
-	static const NSInteger seq[10] = { 3, 5, 4, 1, 8, 0, 2, 6, 7, 9 };
+	static const NSInteger seq[20] = { 3, 5, 8, 1, 3, 9, 8, 2, 3, 6,
+									   8, 0, 3, 7, 8, 4, 5, 6, 1, 9 };
 	if (idx < 0) idx = 0;
-	return seq[(NSUInteger)idx % 10];
+	return seq[(NSUInteger)idx % 20];
 }
 
 static NSArray<NSString *> *MiaoMoodPaths(void) {
@@ -3081,17 +3093,22 @@ static void MiaoRunNextOrEnd(NSString *msg) {
 
 static void MiaoRunWatchThenEnd(NSString *msg) {
 	BOOL wantFS = (gMood != 2);
+	/* Visioni piu' brevi: su 700 sessioni la visione era oltre meta' del tempo
+	   totale, ~94 s per ciclo, e la maratona veniva 38 ore. I rapporti tra le
+	   persone restano gli stessi — videolong guarda ancora piu' del doppio di
+	   impatient — e nessuna scende sotto i 16 s, perche' non sappiamo da quale
+	   secondo il sito consideri valida una visione. */
 	NSTimeInterval minWatch;
-	if (gRunSecondVideo) minWatch = MiaoBetween(40.0, 70.0);
-	else if (gMood == 4) minWatch = MiaoBetween(110.0, 150.0);
-	else if (gMood == 2) minWatch = MiaoBetween(35.0, 65.0);
-	else if (gMood == 3) minWatch = MiaoBetween(40.0, 70.0);
-	else if (gMood == 5) minWatch = MiaoBetween(22.0, 40.0);
-	else if (gMood == 6) minWatch = MiaoBetween(80.0, 110.0);
-	else if (gMood == 7) minWatch = MiaoBetween(45.0, 70.0);
-	else if (gMood == 8) minWatch = MiaoBetween(40.0, 60.0);
-	else if (gMood == 9) minWatch = MiaoBetween(100.0, 140.0);
-	else minWatch = MiaoBetween(100.0, 130.0);
+	if (gRunSecondVideo) minWatch = MiaoBetween(18.0, 28.0);
+	else if (gMood == 4) minWatch = MiaoBetween(38.0, 56.0);
+	else if (gMood == 2) minWatch = MiaoBetween(20.0, 30.0);
+	else if (gMood == 3) minWatch = MiaoBetween(22.0, 34.0);
+	else if (gMood == 5) minWatch = MiaoBetween(16.0, 26.0);
+	else if (gMood == 6) minWatch = MiaoBetween(30.0, 46.0);
+	else if (gMood == 7) minWatch = MiaoBetween(22.0, 34.0);
+	else if (gMood == 8) minWatch = MiaoBetween(20.0, 32.0);
+	else if (gMood == 9) minWatch = MiaoBetween(32.0, 48.0);
+	else minWatch = MiaoBetween(28.0, 44.0);
 
 	void (^watchIdle)(BOOL inFS) = ^(BOOL inFS) {
 		if (inFS) gRunDidFS = YES;
@@ -3943,7 +3960,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.26 scheda-nuova-dopo-riavvio");
+	MiaoLog(@"safari ready 0.14.27 sessioni-brevi-piu-click");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4028,7 +4045,9 @@ static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 		if (done) done();
 		return;
 	}
-	if (MiaoRnd() < 0.28) {
+	/* Riavvio piu' raro: un ciclo a freddo costa 16 s prima che il run parta,
+	   contro 4 e mezzo a caldo. Una volta su otto fa il suo lavoro. */
+	if (MiaoRnd() < 0.12) {
 		MiaoToast(@"Chiudo Safari");
 		/* Chiudere Safari non azzera le schede: alla riapertura le ripristina
 		   tutte, compresa quella di prima, e il ciclo dopo ripartiva sulla
@@ -4067,7 +4086,7 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	/* La calibrazione installa una sonda sulla pagina: si fa una volta sola e il
 	   risultato resta su disco. Se c'e' gia', non la rifacciamo. */
 	BOOL calibrated = [[NSFileManager defaultManager] fileExistsAtPath:kCalPath];
-	NSTimeInterval runAt = cold ? 16.0 : 6.5;
+	NSTimeInterval runAt = cold ? 16.0 : 4.5;
 	if (idx == 0 && !calibrated) {
 		MiaoAfter(3.8, ^{ MiaoSendCmd(@"calib"); });
 		// la calibrazione ora aspetta il DOM prima di misurare: diamole spazio
@@ -4094,13 +4113,16 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 		/* Il passo successivo parte quando il run ha finito, non a un orario
 		   deciso prima: con i tempi fissi mandavamo `human` e `closeextra` su un
 		   run ancora in corso, e il ciclo dopo partiva su uno stato sporco. */
-		MiaoAwaitRunEnd(520.0, ^(BOOL fromSafari) {
+		/* Con le visioni accorciate un run sano finisce sotto i tre minuti, anche
+		   con due video e qualche recupero: 520 s erano nove minuti buttati ogni
+		   volta che un run si impiantava. */
+		MiaoAwaitRunEnd(300.0, ^(BOOL fromSafari) {
 			MiaoLog(fromSafari ? @"cycle: run concluso" : @"cycle: timeout attesa run");
 			if (!fromSafari) MiaoToast(@"Run: timeout");
 			/* Niente `human`: erano scroll dopo la visione e uscivano dal FS. */
-			MiaoAfter(1.4, ^{
+			MiaoAfter(1.0, ^{
 				MiaoSendCmd(@"closeextra");
-				MiaoAfter(2.0, ^{ MiaoCycleReset(idx, total, done); });
+				MiaoAfter(1.2, ^{ MiaoCycleReset(idx, total, done); });
 			});
 		});
 	});
@@ -4126,8 +4148,9 @@ static void MiaoStep(NSInteger i, NSInteger n, NSInteger gen) {
 	MiaoRunCycle(i, n, ^{
 		/* Pausa variabile: nessuno ricomincia a guardare video sempre dopo lo
 		   stesso secondo, e su 700 sessioni un intervallo fisso e' la cosa piu'
-		   riconoscibile che possiamo lasciare nei log del sito. */
-		MiaoAfter(MiaoBetween(3.0, 15.0), ^{ MiaoStep(i + 1, n, gen); });
+		   riconoscibile che possiamo lasciare nei log del sito. Resta un
+		   intervallo, non un valore fisso, solo piu' stretto. */
+		MiaoAfter(MiaoBetween(2.0, 6.0), ^{ MiaoStep(i + 1, n, gen); });
 	});
 }
 
@@ -4151,7 +4174,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.26 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.27 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4252,7 +4275,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.26 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.27 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

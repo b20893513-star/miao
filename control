@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.26
+Version: 0.14.27
 Architecture: iphoneos-arm64
-Description: After Safari restarts it opens a new tab instead of resuming the restored one.
+Description: Shorter sessions and more ad-clicking personas in the 700 marathon.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
