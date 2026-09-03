@@ -34,6 +34,10 @@ static NSString *const kMoodPathJB =
 	@"/var/jb/var/mobile/Library/Miao/mood.txt";
 static NSString *const kAckPath = @"/var/mobile/Documents/miao-ack.txt";
 static NSString *const kLogPath = @"/var/mobile/Documents/miao-loaded.txt";
+/// Safari e' in sandbox e su Documents non scrive: le sue righe finivano nel
+/// nulla, ed erano proprio quelle che dicono perche' la griglia o lo scroll
+/// falliscono. Stesso path JB usato dagli events.
+static NSString *const kLogPathJB = @"/var/jb/var/mobile/Library/Miao/log.txt";
 static NSString *const kHidPath = @"/var/tmp/miao-hid.txt";
 static NSString *const kHidPathDoc = @"/var/mobile/Documents/miao-hid.txt";
 static NSString *const kHidPlist = @"/var/mobile/Library/Preferences/com.noxlab.miao.hid.plist";
@@ -50,16 +54,23 @@ BOOL MiaoIsSB(void);
 
 void MiaoLog(NSString *note) {
 	NSString *line = [NSString stringWithFormat:@"%@ | %@\n", [NSDate date], note ?: @""];
-	NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kLogPath];
-	if (!fh) {
-		[line writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-		return;
+	NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+	/* Su entrambi i path: chi non ha il permesso su uno scrive sull'altro, e
+	   noi leggiamo le righe di SpringBoard e di Safari nello stesso posto. */
+	for (NSString *path in @[ kLogPath, kLogPathJB ]) {
+		NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:path];
+		if (!fh) {
+			[[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent]
+									 withIntermediateDirectories:YES attributes:nil error:nil];
+			[line writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+			continue;
+		}
+		@try {
+			[fh seekToEndOfFile];
+			[fh writeData:data];
+		} @catch (NSException *ex) { (void)ex; }
+		[fh closeFile];
 	}
-	@try {
-		[fh seekToEndOfFile];
-		[fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
-	} @catch (NSException *ex) { (void)ex; }
-	[fh closeFile];
 }
 
 static __weak UILabel *gToast = nil;
@@ -1413,7 +1424,10 @@ static void MiaoScrollToThumb(NSInteger idx, NSInteger tries, void (^done)(BOOL 
 			done(YES, r);
 			return;
 		}
-		if (tries >= 4) {
+		/* Una card a 900-1200 px non si raggiunge in quattro flick: il tetto per
+		   swipe e' ~0.78 dello schermo. Con poche passate finiva sempre OFF e
+		   ogni OFF costava un recupero al run. */
+		if (tries >= 8) {
 			done(visible, r);
 			return;
 		}
@@ -2979,7 +2993,11 @@ static void MiaoRunEnd(NSString *msg, BOOL ok) {
 static void MiaoRunContinueToVideo(NSString *why) {
 	MiaoLog([NSString stringWithFormat:@"rescue %ld %@", (long)gRunRescueTries, why ?: @""]);
 	MiaoStepResult(@"recupero", YES, why ?: @"");
-	if (gRunRescueTries++ >= 3) {
+	/* Il sito apre un popunder su quasi ogni tocco finche' non scatta il suo
+	   limite, poi il tap passa. Nei log il video si apriva al sesto-settimo
+	   giro, ma con tre soli recuperi il run era gia' finito KO: si arrendeva
+	   proprio quando stava per riuscire. */
+	if (gRunRescueTries++ >= 6) {
 		MiaoRunEnd(why.length ? why : @"recupero esaurito", NO);
 		return;
 	}
@@ -3101,7 +3119,7 @@ static void MiaoRunSecondTap(void) {
 		MiaoAfter(MiaoHumanDelay(1.5, 1.0), ^{ MiaoRunWaitSkip(); });
 		return;
 	}
-	if (gRunTapTries++ > 2) {
+	if (gRunTapTries++ > 4) {
 		MiaoStepResult(@"pagina-video", NO, MiaoWebViewURL(MiaoFrontWebView()));
 		MiaoRunContinueToVideo(@"il video non si apre");
 		return;
@@ -3411,11 +3429,29 @@ static void MiaoRunPickAndTap(void) {
 				MiaoStepResult(@"scroll", ok,
 					[NSString stringWithFormat:@"mood=%ld thumb=%ld %@",
 						(long)gMood, (long)idx, raw ?: @""]);
-				if (!ok) {
-					MiaoRunContinueToVideo(@"card non raggiunta");
+				void (^tap)(void) = ^{
+					MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunTapHomeCard(0); });
+				};
+				if (ok) {
+					tap();
 					return;
 				}
-				MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunTapHomeCard(0); });
+				/* Card fuori portata: si ripiega sulla prima della pagina, che
+				   e' sempre raggiungibile, invece di spendere un recupero. */
+				if (idx != 0) {
+					gRunThumb = 0;
+					MiaoScrollToThumb(0, 0, ^(BOOL ok2, NSString *raw2) {
+						MiaoStepResult(@"scroll", ok2,
+							[NSString stringWithFormat:@"ripiego thumb=0 %@", raw2 ?: @""]);
+						if (!ok2) {
+							MiaoRunContinueToVideo(@"card non raggiunta");
+							return;
+						}
+						tap();
+					});
+					return;
+				}
+				MiaoRunContinueToVideo(@"card non raggiunta");
 			});
 		});
 	});
@@ -3519,7 +3555,12 @@ static void MiaoRunStartOnSite(void) {
 					MiaoRunContinueToVideo(@"home non pronta");
 					return;
 				}
-				MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunPickAndTap(); });
+				/* Marca la pagina ADESSO, prima di toccare: dopo il tap l'ad si
+				   e' gia' preso la scheda e non c'e' piu' niente da marcare. */
+				MiaoPageDelta(^(NSString *pg) {
+					(void)pg;
+					MiaoAfter(MiaoHumanDelay(0.7, 1.2), ^{ MiaoRunPickAndTap(); });
+				});
 			});
 		};
 
@@ -3632,7 +3673,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.21 indietro-invece-di-riaprire");
+	MiaoLog(@"safari ready 0.14.22 non-si-arrende-prima-del-video");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -3792,7 +3833,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.21 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.22 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -3893,7 +3934,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.21 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.22 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
