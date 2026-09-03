@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.25
+Version: 0.14.26
 Architecture: iphoneos-arm64
-Description: Each session starts clean: a fresh tab, or Safari closed and reopened.
+Description: After Safari restarts it opens a new tab instead of resuming the restored one.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

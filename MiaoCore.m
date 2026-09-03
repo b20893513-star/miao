@@ -3943,7 +3943,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.25 sessioni-con-reset");
+	MiaoLog(@"safari ready 0.14.26 scheda-nuova-dopo-riavvio");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4030,10 +4030,11 @@ static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 	}
 	if (MiaoRnd() < 0.28) {
 		MiaoToast(@"Chiudo Safari");
+		/* Chiudere Safari non azzera le schede: alla riapertura le ripristina
+		   tutte, compresa quella di prima, e il ciclo dopo ripartiva sulla
+		   stessa pagina. La scheda nuova va quindi fatta dopo il riavvio, non
+		   prima: ci pensa il ciclo che parte, appena Safari e' in piedi. */
 		gColdStart = MiaoKillSafari();
-		/* Safari deve essere morto prima che il ciclo dopo lo riapra: se lo si
-		   riapre troppo presto torna su con le schede di prima e il reset non
-		   e' servito a niente. */
 		MiaoAfter(MiaoBetween(5.0, 9.0), ^{ if (done) done(); });
 		return;
 	}
@@ -4057,10 +4058,16 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	gColdStart = NO;
 	MiaoAfter(cold ? 5.0 : 2.2, ^{ MiaoSendCmd(@"ping"); });
 
+	/* Safari appena riaperto ha ripristinato le schede della sessione prima:
+	   qui si buttano e si riparte da una nuova, altrimenti il run riprende la
+	   pagina di prima invece di aprire una visita nuova. Nei cicli senza
+	   riavvio la scheda nuova l'ha gia' fatta il reset del ciclo precedente. */
+	if (cold) MiaoAfter(7.5, ^{ MiaoSendCmd(@"freshtab"); });
+
 	/* La calibrazione installa una sonda sulla pagina: si fa una volta sola e il
 	   risultato resta su disco. Se c'e' gia', non la rifacciamo. */
 	BOOL calibrated = [[NSFileManager defaultManager] fileExistsAtPath:kCalPath];
-	NSTimeInterval runAt = cold ? 12.0 : 6.5;
+	NSTimeInterval runAt = cold ? 16.0 : 6.5;
 	if (idx == 0 && !calibrated) {
 		MiaoAfter(3.8, ^{ MiaoSendCmd(@"calib"); });
 		// la calibrazione ora aspetta il DOM prima di misurare: diamole spazio
@@ -4144,7 +4151,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.25 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.26 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4245,7 +4252,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.25 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.26 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
