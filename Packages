@@ -1,0 +1,15 @@
+Package: com.noxlab.miao
+Name: Miao
+Description: Taps Skip when the page says it is clickable, instead of counting to thirteen.
+Maintainer: noxlab
+Author: noxlab
+Section: Tweaks
+Depends: firmware (>= 15.0)
+Architecture: iphoneos-arm64
+Version: 0.14.28
+Filename: debs/com.noxlab.miao_0.14.28_iphoneos-arm64.deb
+Size: 125822
+MD5sum: caed68965b66dbc91b2037d881e24373
+SHA1: cd6362c3266fd3801871400cfb703c1b22c29606
+SHA256: 4dbb19900c62a7ff7ac5a1a439e17bc0ea057dba0c5dd7cabd486b40832e6f59
+
