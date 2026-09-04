@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.27
+Version: 0.14.28
 Architecture: iphoneos-arm64
-Description: Shorter sessions and more ad-clicking personas in the 700 marathon.
+Description: Taps Skip when the page says it is clickable, instead of counting to thirteen.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

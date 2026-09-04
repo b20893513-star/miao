@@ -3232,8 +3232,62 @@ static void MiaoRunContinueToVideo(NSString *why) {
 }
 
 /**
- 6) aspetta il countdown VAST (>=10s sul sito) e tocca Skip in basso a destra
- del player. Poi play al centro. Niente scan DOM.
+ Aspetta che lo skip sia davvero cliccabile, invece di contare fino a tredici.
+
+ Prima si attendeva `MiaoBetween(11.2, 14.8)` e si toccava un punto ricavato
+ dalla geometria del player. Due difetti: quando il countdown finiva prima si
+ buttavano secondi, e quando il pulsante non era dove ce lo aspettavamo il tap
+ cadeva nel vuoto senza che nulla lo registrasse — `gRunSkipTries` non viene
+ mai letto, quindi il run tirava avanti e la visione finiva sul preroll invece
+ che sul contenuto, senza un KO nel log.
+
+ Ora la pagina viene interrogata: `kMiaoJSFindSkip` distingue `READY` da `WAIT`
+ (un countdown in corso ha ancora un numero nel testo) e restituisce un punto
+ dentro il pulsante, iframe dei VAST compresi.
+
+ I tre esiti hanno budget diversi, perche' dicono cose diverse. `READY`: si
+ tocca subito. `WAIT`: il pulsante esiste e sta scendendo, vale la pena
+ aspettarlo fino a venti secondi. Nessuna traccia del pulsante: si smette a
+ tredici e si ricade sul tap geometrico di prima, cosi' il comportamento
+ peggiore possibile e' quello che avevamo.
+ */
+static void MiaoRunSkipWhenReady(NSInteger polls, BOOL sawButton,
+								 void (^done)(BOOL tapped, NSString *how)) {
+	NSInteger budget = sawButton ? 20 : 13;
+	if (polls >= budget) {
+		BOOL ok = MiaoTapPt(MiaoPtSkip(), @"skip-geometrico");
+		if (done) done(ok, sawButton ? @"countdown non finito, tap sulla zona"
+									  : @"nessuno skip in pagina, tap sulla zona");
+		return;
+	}
+
+	MiaoJS(kMiaoJSFindSkip, ^(NSString *r) {
+		NSArray *p = [(r ?: @"NONE") componentsSeparatedByString:@"|"];
+		NSString *state = p.firstObject ?: @"NONE";
+
+		if ([state isEqualToString:@"READY"]) {
+			CGPoint vp = p.count > 1 ? MiaoParseXY(p[1]) : CGPointZero;
+			NSString *label = p.count > 2 ? p[2] : @"";
+			/* Il dito non parte insieme al pulsante: una persona lo vede
+			   accendersi e poi lo tocca. */
+			MiaoAfter(MiaoBetween(0.5, 1.6), ^{
+				BOOL ok = MiaoTrustedTapViewport(vp, @"skip");
+				if (!ok) ok = MiaoTapPt(MiaoPtSkip(), @"skip-geometrico");
+				if (done) done(ok, [NSString stringWithFormat:@"\"%@\" pronto a %lds",
+					label, (long)polls]);
+			});
+			return;
+		}
+
+		MiaoAfter(MiaoBetween(0.8, 1.3), ^{
+			MiaoRunSkipWhenReady(polls + 1,
+				sawButton || [state isEqualToString:@"WAIT"], done);
+		});
+	});
+}
+
+/**
+ 6) aspetta che il countdown VAST finisca, tocca Skip, poi play al centro.
  */
 static void MiaoRunWaitSkip(void) {
 	if (MiaoForeignFront()) {
@@ -3248,16 +3302,18 @@ static void MiaoRunWaitSkip(void) {
 		return;
 	}
 
-	NSTimeInterval wait = MiaoBetween(11.2, 14.8);
-	MiaoToast([NSString stringWithFormat:@"Attendo skip %.0fs", wait]);
-	MiaoAfter(wait, ^{
-		MiaoToast(@"Skip");
-		BOOL ok = MiaoTapPt(MiaoPtSkip(), @"skip");
-		MiaoStepResult(@"skip", ok, @"zona basso-destra player");
-		MiaoAfter(MiaoBetween(1.5, 2.6), ^{
-			MiaoTapPt(MiaoPtPlay(), @"play-dopo-skip");
-			MiaoAfter(MiaoBetween(1.2, 2.2), ^{
-				MiaoRunWatchThenEnd(@"video");
+	MiaoToast(@"Attendo skip");
+	/* Un paio di secondi prima di cercarlo: sul preroll appena partito il
+	   pulsante non c'e' ancora, e chi guarda non lo fissa dal primo istante. */
+	MiaoAfter(MiaoBetween(2.0, 3.2), ^{
+		MiaoRunSkipWhenReady(0, NO, ^(BOOL ok, NSString *how) {
+			MiaoToast(@"Skip");
+			MiaoStepResult(@"skip", ok, how ?: @"");
+			MiaoAfter(MiaoBetween(1.5, 2.6), ^{
+				MiaoTapPt(MiaoPtPlay(), @"play-dopo-skip");
+				MiaoAfter(MiaoBetween(1.2, 2.2), ^{
+					MiaoRunWatchThenEnd(@"video");
+				});
 			});
 		});
 	});
@@ -3960,7 +4016,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.27 sessioni-brevi-piu-click");
+	MiaoLog(@"safari ready 0.14.28 skip-quando-e-pronto");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4174,7 +4230,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.27 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.28 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4275,7 +4331,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.27 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.28 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
