@@ -153,10 +153,13 @@ static void MPSend(NSString *line, const char *note) {
 															target:self action:@selector(diagnose)];
 	UIBarButtonItem *flex = [[UIBarButtonItem alloc]
 		initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
+	UIBarButtonItem *cookies = [[UIBarButtonItem alloc] initWithTitle:@"Cookie"
+															   style:UIBarButtonItemStylePlain
+															  target:self action:@selector(clearCookies)];
 	UIBarButtonItem *clear = [[UIBarButtonItem alloc] initWithTitle:@"Pulisci"
 															 style:UIBarButtonItemStylePlain
 															target:self action:@selector(clear)];
-	self.toolbarItems = @[ stop, flex, link, flex, diag, flex, clear ];
+	self.toolbarItems = @[ stop, flex, link, flex, diag, flex, cookies, flex, clear ];
 	self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
 		initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
 							 target:self action:@selector(reload)];
@@ -283,6 +286,12 @@ static void MPSend(NSString *line, const char *note) {
 	[a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
 	[self presentViewController:a animated:YES completion:nil];
 	[self reload];
+}
+
+- (void)clearCookies {
+	MPSend(@"cleardata", "com.noxlab.miao.cleardata");
+	self.diagLine = @"Cancellazione cookie inviata";
+	[self updateStatus];
 }
 
 - (void)clear {

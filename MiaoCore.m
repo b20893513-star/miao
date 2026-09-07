@@ -435,6 +435,89 @@ static BOOL MiaoKillSafari(void) {
 	return NO;
 }
 
+static void MiaoSessionStop(void);
+
+/**
+ Cancella cookie e dati siti di Safari, come Impostazioni → Safari →
+ Cancella cronologia e dati.
+
+ Va fatto da SpringBoard a Safari chiuso: i file restano altrimenti bloccati
+ e WKWebsiteDataStore in un altro processo non tocca lo store di Safari.
+ */
+static NSInteger MiaoRemovePathTree(NSString *path) {
+	NSFileManager *fm = [NSFileManager defaultManager];
+	BOOL isDir = NO;
+	if (![fm fileExistsAtPath:path isDirectory:&isDir]) return 0;
+	NSError *err = nil;
+	if ([fm removeItemAtPath:path error:&err]) return 1;
+	MiaoLog([NSString stringWithFormat:@"cleardata: non rimosso %@ (%@)",
+		path, err.localizedDescription ?: @"?"]);
+	return 0;
+}
+
+static NSInteger MiaoClearSafariBrowsingData(void) {
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSInteger n = 0;
+
+	/* Cookie jar condiviso + HTTP storage di Safari */
+	n += MiaoRemovePathTree(@"/var/mobile/Library/Cookies");
+	[fm createDirectoryAtPath:@"/var/mobile/Library/Cookies"
+  withIntermediateDirectories:YES attributes:nil error:nil];
+
+	NSArray *exact = @[
+		@"/var/mobile/Library/Safari/History.db",
+		@"/var/mobile/Library/Safari/History.db-shm",
+		@"/var/mobile/Library/Safari/History.db-wal",
+		@"/var/mobile/Library/Safari/BrowserState.db",
+		@"/var/mobile/Library/Safari/BrowserState.db-shm",
+		@"/var/mobile/Library/Safari/BrowserState.db-wal",
+		@"/var/mobile/Library/Safari/CloudTabs.db",
+		@"/var/mobile/Library/Safari/CloudTabs.db-shm",
+		@"/var/mobile/Library/Safari/CloudTabs.db-wal",
+		@"/var/mobile/Library/Safari/RecentlyClosedTabs.plist",
+		@"/var/mobile/Library/Safari/AutoFillCorrections.db",
+		@"/var/mobile/Library/Safari/PerSitePreferences.db",
+		@"/var/mobile/Library/Safari/PerSitePreferences.db-shm",
+		@"/var/mobile/Library/Safari/PerSitePreferences.db-wal",
+		@"/var/mobile/Library/HTTPStorages/com.apple.mobilesafari",
+		@"/var/mobile/Library/WebKit/WebsiteData",
+		@"/var/mobile/Library/Caches/com.apple.mobilesafari",
+		@"/var/mobile/Library/Caches/com.apple.WebKit",
+		@"/var/mobile/Library/Caches/WebKit",
+		@"/var/mobile/Library/Caches/com.apple.Safari",
+	];
+	for (NSString *p in exact) n += MiaoRemovePathTree(p);
+
+	/* Residui tipici nella cartella Safari (TopSites, Search, ecc.) */
+	NSString *safariDir = @"/var/mobile/Library/Safari";
+	NSArray *kids = [fm contentsOfDirectoryAtPath:safariDir error:nil];
+	for (NSString *name in kids) {
+		NSString *low = name.lowercaseString;
+		if ([low hasPrefix:@"history"] || [low hasPrefix:@"browserstate"] ||
+			[low hasPrefix:@"cloudtabs"] || [low hasPrefix:@"topsites"] ||
+			[low hasPrefix:@"search"] || [low hasPrefix:@"recently"] ||
+			[low containsString:@"cookie"] || [low containsString:@"localstorage"]) {
+			n += MiaoRemovePathTree([safariDir stringByAppendingPathComponent:name]);
+		}
+	}
+
+	MiaoLog([NSString stringWithFormat:@"cleardata: rimossi %ld elementi", (long)n]);
+	return n;
+}
+
+static void MiaoClearSafariDataFromPanel(void) {
+	if (!MiaoIsSB()) return;
+	if (gSessionBusy) MiaoSessionStop();
+	MiaoToast(@"Cancello cookie…");
+	MiaoKillSafari();
+	/* Aspetta che Safari rilasci i file, poi wipe come Impostazioni. */
+	MiaoAfter(1.6, ^{
+		NSInteger n = MiaoClearSafariBrowsingData();
+		MiaoToast([NSString stringWithFormat:@"Cookie ok (%ld)", (long)n]);
+		MiaoLog([NSString stringWithFormat:@"pannello: cleardata n=%ld", (long)n]);
+	});
+}
+
 #pragma mark - Cmd bus
 
 static void MiaoSendCmd(NSString *cmd) {
@@ -2158,6 +2241,10 @@ static void MiaoCloseAllTabsHuman(void (^done)(BOOL ok)) {
  vede una visita sola che non finisce mai — stessa pagina, stessi timer, script
  degli ads ancora armati — e le schede lasciate indietro si accumulano fino a
  rallentare Safari.
+
+ Se le API private chiudono solo una parte delle schede, si passa al gesto
+ umano (pressione lunga → Chiudi tutte), altrimenti ne resta una e al
+ riavvio di Safari torna quella.
  */
 static void MiaoActFreshTab(void) {
 	id bc = MiaoBrowser();
@@ -2173,7 +2260,11 @@ static void MiaoActFreshTab(void) {
 		MiaoOpenURL(MiaoHomeURL());
 	};
 
-	if (closed == 0 && tabs.count > 0) {
+	NSArray *left = MiaoTabList(MiaoBrowser());
+	if (left.count > 0) {
+		MiaoLog([NSString stringWithFormat:
+			@"scheda nuova: restano %lu, chiudo tutte a mano",
+			(unsigned long)left.count]);
 		MiaoCloseAllTabsHuman(^(BOOL ok) {
 			(void)ok;
 			MiaoAfter(MiaoBetween(0.8, 1.4), apri);
@@ -4016,7 +4107,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.28 skip-quando-e-pronto");
+	MiaoLog(@"safari ready 0.14.30 cancella-cookie");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4088,33 +4179,26 @@ static BOOL gColdStart = NO;
 /**
  Chiude una sessione e prepara la prossima da uno stato pulito.
 
- Quasi sempre basta una scheda nuova. Ogni tanto invece Safari si chiude e si
- riapre: e' quello che fa chi mette via il telefono e lo riprende dopo, e
- azzera anche cio' che una scheda nuova si porta dietro — processi web ancora
- vivi, timer, script degli ads che restano armati nello stesso processo.
-
- La scelta e' casuale, non a turno fisso: un ritmo tipo "ogni quattro sessioni
- riavvio" e' esattamente il genere di regolarita' che non ha nessuna persona.
+ Prima chiude tutte le schede (mentre Safari e' ancora vivo), poi chiude
+ Safari. Se si termina Safari con le schede aperte, al riavvio le ripristina
+ tutte — compreso lo stack ads — e il ciclo dopo riparte sporco. Chiudendole
+ prima, lo stato salvato e' vuoto; al riavvio `freshtab` ripulisce eventuali
+ residui e apre la home.
  */
 static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 	if (idx + 1 >= total) {
 		if (done) done();
 		return;
 	}
-	/* Riavvio piu' raro: un ciclo a freddo costa 16 s prima che il run parta,
-	   contro 4 e mezzo a caldo. Una volta su otto fa il suo lavoro. */
-	if (MiaoRnd() < 0.12) {
+	MiaoToast(@"Chiudo schede");
+	MiaoSendCmd(@"freshtab");
+	/* Chiudi-tutte a mano puo' richiedere 4-6 s: non killare Safari mentre
+	   il gesto e' a meta', altrimenti resta lo stato vecchio su disco. */
+	MiaoAfter(MiaoBetween(6.5, 9.0), ^{
 		MiaoToast(@"Chiudo Safari");
-		/* Chiudere Safari non azzera le schede: alla riapertura le ripristina
-		   tutte, compresa quella di prima, e il ciclo dopo ripartiva sulla
-		   stessa pagina. La scheda nuova va quindi fatta dopo il riavvio, non
-		   prima: ci pensa il ciclo che parte, appena Safari e' in piedi. */
 		gColdStart = MiaoKillSafari();
 		MiaoAfter(MiaoBetween(5.0, 9.0), ^{ if (done) done(); });
-		return;
-	}
-	MiaoSendCmd(@"freshtab");
-	MiaoAfter(MiaoBetween(4.0, 7.0), ^{ if (done) done(); });
+	});
 }
 
 static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
@@ -4133,16 +4217,15 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	gColdStart = NO;
 	MiaoAfter(cold ? 5.0 : 2.2, ^{ MiaoSendCmd(@"ping"); });
 
-	/* Safari appena riaperto ha ripristinato le schede della sessione prima:
-	   qui si buttano e si riparte da una nuova, altrimenti il run riprende la
-	   pagina di prima invece di aprire una visita nuova. Nei cicli senza
-	   riavvio la scheda nuova l'ha gia' fatta il reset del ciclo precedente. */
+	/* Dopo il kill, Safari puo' comunque ripristinare una scheda (o la start
+	   page). Si ripulisce di nuovo e si apre la home prima del run. Le schede
+	   le abbiamo gia' chiuse prima del kill: questo e' il secondo passaggio. */
 	if (cold) MiaoAfter(7.5, ^{ MiaoSendCmd(@"freshtab"); });
 
 	/* La calibrazione installa una sonda sulla pagina: si fa una volta sola e il
 	   risultato resta su disco. Se c'e' gia', non la rifacciamo. */
 	BOOL calibrated = [[NSFileManager defaultManager] fileExistsAtPath:kCalPath];
-	NSTimeInterval runAt = cold ? 16.0 : 4.5;
+	NSTimeInterval runAt = cold ? 18.0 : 4.5;
 	if (idx == 0 && !calibrated) {
 		MiaoAfter(3.8, ^{ MiaoSendCmd(@"calib"); });
 		// la calibrazione ora aspetta il DOM prima di misurare: diamole spazio
@@ -4230,7 +4313,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.28 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.30 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4298,6 +4381,14 @@ static void MiaoStartSBCommands(void) {
 		[[NSFileManager defaultManager] removeItemAtPath:kSbCmdPath error:nil];
 		MiaoSessionStop();
 	});
+	int t3 = 0;
+	notify_register_dispatch("com.noxlab.miao.cleardata", &t3, dispatch_get_main_queue(), ^(int t) {
+		(void)t;
+		[[NSFileManager defaultManager] removeItemAtPath:kSbCmdPath error:nil];
+		[[NSFileManager defaultManager] removeItemAtPath:
+			@"/var/mobile/Library/Preferences/com.noxlab.miao.sbcmd.txt" error:nil];
+		MiaoClearSafariDataFromPanel();
+	});
 	MiaoRunEndListen();
 }
 
@@ -4331,7 +4422,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.28 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.30 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

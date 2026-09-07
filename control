@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.28
+Version: 0.14.30
 Architecture: iphoneos-arm64
-Description: Taps Skip when the page says it is clickable, instead of counting to thirteen.
+Description: Panel button clears Safari cookies and website data like Settings.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
