@@ -2394,19 +2394,16 @@ static NSArray<MiaoAXNode *> *MiaoTabCards(void) {
 /**
  Le schede sembrano chiuse.
 
- Nessun segnale da solo e' affidabile: su iOS 16 la lista schede delle API
- private torna vuota anche con schede aperte, e Safari scarica le webview
- delle schede in secondo piano. Si chiede quindi a tutti e tre — API, webview
- caricate e miniature in panoramica — e basta un "no" per continuare.
-
- La scheda vuota (start page) non conta: dopo "Chiudi tutte" resta sempre
- quella, e pretendere zero schede tornava un falso negativo perenne.
+ Su iOS 16 la lista API e le webview in background mentono: tornano vuote
+ anche con schede salvate. L'unico controllo che conta e' la panoramica:
+ zero miniature. Fuori dalla griglia si dice "non chiuse" e si va a
+ verificarle, non si da' ok.
  */
 static BOOL MiaoTabsLookClosed(void) {
 	if (MiaoUrlTabCount() > 0) return NO;
 	if (MiaoLoadedPageCount() > 0) return NO;
-	if (MiaoInTabOverview() && MiaoTabCards().count > 0) return NO;
-	return YES;
+	if (!MiaoInTabOverview()) return NO;
+	return MiaoTabCards().count == 0;
 }
 
 /// La X di una miniatura: un pulsante piccolo col centro dentro la card.
@@ -2454,7 +2451,7 @@ static void MiaoCloseAllTabsInGrid(NSInteger tries, NSInteger stalls, void (^don
 		return;
 	}
 	NSArray<MiaoAXNode *> *cards = MiaoTabCards();
-	if (tries <= 0 || stalls >= 3 || cards.count == 0) {
+	if (tries <= 0 || stalls >= 5 || cards.count == 0) {
 		MiaoLog([NSString stringWithFormat:
 			@"chiudi griglia: stop (giri %ld, fermi %ld, card %lu)\n%@",
 			(long)tries, (long)stalls, (unsigned long)cards.count, MiaoAXDump()]);
@@ -2493,7 +2490,7 @@ static void MiaoCloseAllTabsHumanAttempt(NSInteger attempt, void (^done)(BOOL ok
 	if (MiaoInTabOverview() || attempt >= 3) {
 		MiaoOpenTabOverview(^(BOOL inGrid) {
 			(void)inGrid;
-			MiaoCloseAllTabsInGrid(16, 0, done);
+			MiaoCloseAllTabsInGrid(24, 0, done);
 		});
 		return;
 	}
@@ -2503,7 +2500,7 @@ static void MiaoCloseAllTabsHumanAttempt(NSInteger attempt, void (^done)(BOOL ok
 		MiaoLog(@"chiudi tutte: pulsante schede assente");
 		MiaoOpenTabOverview(^(BOOL inGrid) {
 			(void)inGrid;
-			MiaoCloseAllTabsInGrid(16, 0, done);
+			MiaoCloseAllTabsInGrid(24, 0, done);
 		});
 		return;
 	}
@@ -2533,7 +2530,7 @@ static void MiaoCloseAllTabsHumanAttempt(NSInteger attempt, void (^done)(BOOL ok
 				MiaoLog(@"chiudi tutte: dopo menu restano schede, passo alle miniature");
 				MiaoOpenTabOverview(^(BOOL inGrid) {
 					(void)inGrid;
-					MiaoCloseAllTabsInGrid(16, 0, done);
+					MiaoCloseAllTabsInGrid(24, 0, done);
 				});
 			});
 		});
@@ -2550,8 +2547,9 @@ static void MiaoCloseAllTabsHuman(void (^done)(BOOL ok)) {
  Tra sessioni non bisogna fare openURL prima del kill: altrimenti Safari
  salva di nuovo una scheda nello stato e al riavvio la ripristina.
 
- Alla fine, se resta della roba aperta, si esce dalla panoramica con Fine:
- lasciare Safari nella griglia confonde il ciclo dopo.
+ Non si tocca Fine se le miniature restano: uscire dalla griglia faceva
+ credere chiuse delle schede ancora aperte. Si resta in panoramica a
+ zero card, poi SpringBoard puo' killare.
  */
 static void MiaoActCloseAllTabs(void (^done)(BOOL ok)) {
 	id bc = MiaoBrowser();
@@ -2565,15 +2563,11 @@ static void MiaoActCloseAllTabs(void (^done)(BOOL ok)) {
 	void (^finish)(void) = ^{
 		BOOL ok = MiaoTabsLookClosed();
 		MiaoLog([NSString stringWithFormat:
-			@"closetabs: fine ok=%d (api %ld, pagine %ld, card %lu)",
+			@"closetabs: fine ok=%d (api %ld, pagine %ld, card %lu overview=%d)",
 			ok ? 1 : 0, (long)MiaoUrlTabCount(), (long)MiaoLoadedPageCount(),
-			(unsigned long)MiaoTabCards().count]);
+			(unsigned long)MiaoTabCards().count, MiaoInTabOverview() ? 1 : 0]);
 		MiaoToast(ok ? @"Schede chiuse" : @"Schede: incomplete");
 		MiaoAck([NSString stringWithFormat:@"closetabs ok=%d", ok ? 1 : 0]);
-		if (!ok && MiaoInTabOverview()) {
-			MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
-			if (fine) MiaoTapNode(fine, @"fine-uscita");
-		}
 		if (done) done(ok);
 	};
 
@@ -4382,8 +4376,22 @@ static void MiaoHandle(NSString *cmd) {
 		});
 	} else if ([cmd isEqualToString:@"closetabs"]) {
 		MiaoActCloseAllTabs(^(BOOL ok) {
-			MiaoLog([NSString stringWithFormat:@"closetabs: notifica tabsdone ok=%d", ok ? 1 : 0]);
-			notify_post("com.noxlab.miao.tabsdone");
+			if (ok) {
+				MiaoLog(@"closetabs: ok, tabsdone");
+				notify_post("com.noxlab.miao.tabsdone");
+				return;
+			}
+			MiaoLog(@"closetabs: retry panoramica");
+			MiaoOpenTabOverview(^(BOOL inGrid) {
+				(void)inGrid;
+				MiaoCloseAllTabsInGrid(24, 0, ^(BOOL ok2) {
+					MiaoLog([NSString stringWithFormat:
+						@"closetabs: retry ok=%d (card %lu)",
+						ok2 ? 1 : 0, (unsigned long)MiaoTabCards().count]);
+					/* Gesto finito: si notifica sempre, cosi' SB non kill-a a meta'. */
+					notify_post("com.noxlab.miao.tabsdone");
+				});
+			});
 		});
 	} else if ([cmd isEqualToString:@"freshtab"]) {
 		MiaoActFreshTab();
@@ -4444,7 +4452,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.33 cookie-dopo-sessione");
+	MiaoLog(@"safari ready 0.14.34 schede-zero-prima-del-kill");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4583,10 +4591,18 @@ static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 
 	MiaoToast(@"Chiudo schede");
 	MiaoSendCmd(@"closetabs");
-	MiaoAwaitTabsDone(28.0, ^(BOOL fromSafari) {
-		MiaoLog([NSString stringWithFormat:@"cycle reset: schede %@",
-			fromSafari ? @"confermate" : @"scadute"]);
-		wipe();
+	MiaoAwaitTabsDone(45.0, ^(BOOL fromSafari) {
+		if (fromSafari) {
+			MiaoLog(@"cycle reset: schede confermate");
+			wipe();
+			return;
+		}
+		MiaoLog(@"cycle reset: schede scadute, aspetto ancora");
+		MiaoAwaitTabsDone(25.0, ^(BOOL from2) {
+			MiaoLog([NSString stringWithFormat:@"cycle reset: schede retry %@",
+				from2 ? @"ok" : @"scadute"]);
+			wipe();
+		});
 	});
 }
 
@@ -4706,7 +4722,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.33 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.34 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4815,7 +4831,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.33 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.34 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

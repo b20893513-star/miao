@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.33
+Version: 0.14.34
 Architecture: iphoneos-arm64
-Description: After each session wipes Safari cookies and website data for independent trials.
+Description: Verifies tab overview is empty before killing Safari between sessions.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
