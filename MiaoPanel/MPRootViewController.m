@@ -83,7 +83,7 @@ static void MPSend(NSString *line, const char *note) {
 }
 
 - (void)buildHeader {
-	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 310)];
+	self.header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 320, 360)];
 
 	self.status = [UILabel new];
 	self.status.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
@@ -101,6 +101,7 @@ static void MPSend(NSString *line, const char *note) {
 	UIButton *b3 = [self personaButton:@"Click ads+" mood:@"clickall"];
 	UIButton *b4 = [self personaButton:@"Sessione lunga" mood:@"videolong"];
 	UIButton *b5 = [self personaButton:@"Maratona 700" mood:@"mix"];
+	UIButton *b6 = [self personaButton:@"Maratona full" mood:@"fullmix"];
 
 	UIStackView *row1 = [[UIStackView alloc] initWithArrangedSubviews:@[ b0, b1, b2 ]];
 	row1.axis = UILayoutConstraintAxisHorizontal;
@@ -112,7 +113,7 @@ static void MPSend(NSString *line, const char *note) {
 	row2.distribution = UIStackViewDistributionFillEqually;
 	row2.spacing = 8;
 
-	UIStackView *row3 = [[UIStackView alloc] initWithArrangedSubviews:@[ b5 ]];
+	UIStackView *row3 = [[UIStackView alloc] initWithArrangedSubviews:@[ b5, b6 ]];
 	row3.axis = UILayoutConstraintAxisHorizontal;
 	row3.distribution = UIStackViewDistributionFillEqually;
 	row3.spacing = 8;
@@ -203,7 +204,7 @@ static void MPSend(NSString *line, const char *note) {
 - (void)startPersona:(UIButton *)sender {
 	NSString *mood = sender.accessibilityIdentifier ?: @"casual";
 	NSInteger n = [self chosenCount];
-	if ([mood isEqualToString:@"mix"]) n = 700;
+	if ([mood isEqualToString:@"mix"] || [mood isEqualToString:@"fullmix"]) n = 700;
 	MPSend([NSString stringWithFormat:@"session %ld %@", (long)n, mood],
 		"com.noxlab.miao.session");
 	self.diagLine = [NSString stringWithFormat:@"Avvio %ld × %@", (long)n, mood];

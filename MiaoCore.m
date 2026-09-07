@@ -192,11 +192,23 @@ static BOOL MiaoIsSiteURL(NSString *url) {
  sull'ad), un altro e' frettoloso ma non istantaneo, un altro e' normale.
  Mood 3 = click ads aggressivo; 4 = visione lunga; 5-9 altre mani;
  10 = mix (ogni ciclo una persona diversa).
+ 11 = fullmix (maratona full: seed unico per ciclo, max ads, video a rotazione,
+ visione >= 30 s).
  */
 static uint32_t gRng = 0;
 static NSInteger gMood = 1;
-/// -1 auto, 0-9 persona, 10 mix.
+/// -1 auto, 0-9 persona, 10 mix, 11 fullmix.
 static NSInteger gForcedMood = -1;
+/// Indice ciclo 0..699 passato da SpringBoard con `run fullmix N`.
+static NSInteger gFullCycle = -1;
+
+static BOOL MiaoIsFullMix(void) {
+	return gMood == 11 || gForcedMood == 11;
+}
+
+static BOOL MiaoIsMarathonMood(void) {
+	return gForcedMood == 10 || gForcedMood == 11;
+}
 
 static double MiaoRng(void) {
 	if (!gRng) gRng = arc4random() | 1;
@@ -218,6 +230,7 @@ static NSString *MiaoMoodName(NSInteger m) {
 		case 8: return @"hunter";
 		case 9: return @"night";
 		case 10: return @"mix";
+		case 11: return @"fullmix";
 		default: return @"casual";
 	}
 }
@@ -237,6 +250,8 @@ static NSInteger MiaoParseMoodToken(NSString *tok) {
 	if ([t hasPrefix:@"night"] || [t isEqualToString:@"9"]) return 9;
 	if ([t hasPrefix:@"mix"] || [t hasPrefix:@"cast"] || [t hasPrefix:@"mara"] ||
 		[t isEqualToString:@"10"]) return 10;
+	if ([t hasPrefix:@"full"] || [t hasPrefix:@"maraf"] || [t isEqualToString:@"11"])
+		return 11;
 	return -1;
 }
 
@@ -305,9 +320,19 @@ static NSInteger MiaoMoodRead(void) {
 static void MiaoPersonaBegin(void) {
 	uint32_t s = MiaoReportSeed();
 	if (!s) s = arc4random();
-	gRng = s | 1;
 	NSInteger forced = MiaoMoodRead();
 	if (forced < 0) forced = gForcedMood;
+	if (forced == 11) {
+		gMood = 11;
+		uint32_t cyc = (uint32_t)MAX(0, gFullCycle);
+		/* Seed diverso a ogni ciclo: stessi base/spread non si ripetono. */
+		gRng = (s ^ (cyc * 0x85ebca6bu) ^ 0xC2B2AE35u ^ ((cyc + 1u) << 11)) | 1;
+		MiaoUIKitSetTouchSeed(gRng ^ 0x9E3779B9u ^ (cyc * 0x27d4eb2du));
+		MiaoLog([NSString stringWithFormat:
+			@"persona fullmix cycle=%ld seed=%08x", (long)gFullCycle, gRng]);
+		return;
+	}
+	gRng = s | 1;
 	if (forced == 10) gMood = MiaoMixMood((NSInteger)(s % 100));
 	else if (forced >= 0 && forced <= 9) gMood = forced;
 	else gMood = (NSInteger)(s % 3);
@@ -339,6 +364,7 @@ static NSTimeInterval MiaoHumanDelay(NSTimeInterval base, NSTimeInterval spread)
 	else if (gMood == 3 || gMood == 8) t *= 1.12;
 	else if (gMood == 6) t *= 1.40;
 	else if (gMood == 7) t *= 1.10;
+	else if (gMood == 11) t *= (0.95 + MiaoRng() * 0.45);
 	return MAX(0.15, t);
 }
 
@@ -354,6 +380,7 @@ static NSTimeInterval MiaoAdDwell(void) {
 	else if (gMood == 7) t = MiaoBetween(5.0, 8.0);
 	else if (gMood == 8) t = MiaoBetween(10.0, 16.0);
 	else if (gMood == 9) t = MiaoBetween(4.0, 7.0);
+	else if (gMood == 11) t = MiaoBetween(10.0, 18.0); /* max ads: resta a cliccare */
 	else t = MiaoBetween(5.5, 10.0);
 	if (MiaoRng() < 0.2) t += MiaoBetween(2.0, 5.0);
 	return t;
@@ -660,6 +687,9 @@ static void MiaoClearSafariDataNow(void (^done)(BOOL ok)) {
 
  Su maratona: ON → pausa → OFF → attesa rete, per spingere Private Relay
  a ripescare un exit. Non e' garantito un IP nuovo a ogni giro.
+
+ iOS, spegnendo l'Aereo, ripristina il Wi‑Fi allo stato pre-toggle anche
+ se l'utente l'aveva spento a mano: dopo OFF si forza Wi‑Fi spento.
  */
 static NSInteger gAirplaneGen = 0;
 
@@ -704,6 +734,39 @@ static BOOL MiaoSetAirplane(BOOL on) {
 	}
 }
 
+/// Forza Wi‑Fi off da SpringBoard (SBWiFiManager). Ritorna YES se ha trovato un'API.
+static BOOL MiaoForceWiFiOff(void) {
+	if (!MiaoIsSB()) return NO;
+	Class c = NSClassFromString(@"SBWiFiManager");
+	SEL shared = NSSelectorFromString(@"sharedInstance");
+	if (!c || ![c respondsToSelector:shared]) {
+		MiaoLog(@"wifi: SBWiFiManager assente");
+		return NO;
+	}
+	id mgr = nil;
+	@try { mgr = ((id (*)(id, SEL))objc_msgSend)(c, shared); }
+	@catch (NSException *ex) { (void)ex; return NO; }
+	if (!mgr) return NO;
+	BOOL did = NO;
+	@try {
+		SEL setEn = NSSelectorFromString(@"setWiFiEnabled:");
+		if ([mgr respondsToSelector:setEn]) {
+			((void (*)(id, SEL, BOOL))objc_msgSend)(mgr, setEn, NO);
+			did = YES;
+		}
+		SEL setPow = NSSelectorFromString(@"setPowered:");
+		if ([mgr respondsToSelector:setPow]) {
+			((void (*)(id, SEL, BOOL))objc_msgSend)(mgr, setPow, NO);
+			did = YES;
+		}
+	} @catch (NSException *ex) {
+		MiaoLog([NSString stringWithFormat:@"wifi fail %@", ex.reason ?: @"?"]);
+		return NO;
+	}
+	MiaoLog([NSString stringWithFormat:@"wifi: force off %@", did ? @"ok" : @"no-api"]);
+	return did;
+}
+
 /// Solo maratona (mood mix): spegne/riaccende la rete tra una sessione e l'altra.
 static void MiaoMarathonAirplaneBlink(void (^done)(void)) {
 	NSInteger gen = ++gAirplaneGen;
@@ -715,11 +778,19 @@ static void MiaoMarathonAirplaneBlink(void (^done)(void)) {
 		MiaoToast(@"Aereo OFF");
 		BOOL okOff = MiaoSetAirplane(NO);
 		MiaoLog([NSString stringWithFormat:@"maratona aereo: off=%d", okOff ? 1 : 0]);
-		/* La radio e Relay ripartono dopo qualche secondo: senza questa
-		   attesa il ciclo dopo apre Safari senza rete. */
-		MiaoAfter(MiaoBetween(10.0, 15.0), ^{
+		/* iOS riaccende il Wi‑Fi al ripristino: lo spegniamo subito e di nuovo
+		   dopo un attimo, perche' il restore e' asincrono. */
+		MiaoForceWiFiOff();
+		MiaoAfter(1.5, ^{
 			if (gen != gAirplaneGen) return;
-			if (done) done();
+			MiaoForceWiFiOff();
+			/* Cellulare e Relay ripartono dopo qualche secondo: senza questa
+			   attesa il ciclo dopo apre Safari senza rete. */
+			MiaoAfter(MiaoBetween(10.0, 15.0), ^{
+				if (gen != gAirplaneGen) return;
+				MiaoForceWiFiOff();
+				if (done) done();
+			});
 		});
 	});
 }
@@ -1728,6 +1799,23 @@ static void MiaoPickThumb(void (^done)(NSInteger idx)) {
 		}
 
 		NSArray *pool = nil;
+		if (gMood == 11) {
+			/* Maratona full: un video diverso a ogni ciclo (round-robin sul DOM).
+			   Se i video in pagina sono N < 700, dopo N si riparte, ma seed e
+			   gesti restano unici. */
+			if (!all.count) {
+				done(-1);
+				return;
+			}
+			NSInteger cyc = gFullCycle >= 0 ? gFullCycle : (NSInteger)(MiaoRng() * 1000);
+			NSUInteger slot = (NSUInteger)(cyc % (NSInteger)all.count);
+			NSInteger pick = [all[slot] integerValue];
+			MiaoLog([NSString stringWithFormat:
+				@"thumb pick fullmix cycle=%ld slot=%lu/%lu idx=%ld",
+				(long)gFullCycle, (unsigned long)slot, (unsigned long)all.count, (long)pick]);
+			done(pick);
+			return;
+		}
 		if (gMood == 0 || gMood == 4 || gMood == 9) {
 			/* curioso / video lungo: un po' piu' in basso, ma non oltre 2 schermate */
 			pool = mid.count ? mid : near;
@@ -3403,6 +3491,7 @@ static void MiaoRunNextOrEnd(NSString *msg);
 static void MiaoRunStartOnSite(void);
 static void MiaoRunTapChosen(NSString *label, NSInteger zone, void (^done)(BOOL tapped));
 static void MiaoOpenVideoLongPress(NSInteger idx, NSString *href, void (^done)(BOOL ok));
+static void MiaoLingerOnAd(void (^done)(void));
 
 /// Un passo con esito: finisce nel log leggibile e nel report del pannello.
 static void MiaoStepResult(NSString *name, BOOL ok, NSString *detail) {
@@ -3585,7 +3674,8 @@ static void MiaoRunWatchThenEnd(NSString *msg) {
 	   impatient — e nessuna scende sotto i 16 s, perche' non sappiamo da quale
 	   secondo il sito consideri valida una visione. */
 	NSTimeInterval minWatch;
-	if (gRunSecondVideo) minWatch = MiaoBetween(18.0, 28.0);
+	if (gMood == 11) minWatch = MiaoBetween(30.0, 48.0); /* fullmix: almeno 30 s */
+	else if (gRunSecondVideo) minWatch = MiaoBetween(18.0, 28.0);
 	else if (gMood == 4) minWatch = MiaoBetween(38.0, 56.0);
 	else if (gMood == 2) minWatch = MiaoBetween(20.0, 30.0);
 	else if (gMood == 3) minWatch = MiaoBetween(22.0, 34.0);
@@ -3717,6 +3807,69 @@ static void MiaoRunContinueToVideo(NSString *why) {
 	});
 }
 
+static CGPoint MiaoPtVideoAdAbove(void) {
+	CGRect area;
+	if (MiaoContentArea(&area)) {
+		return MiaoJitterPt(CGPointMake(CGRectGetMidX(area),
+			area.origin.y + 36 + (CGFloat)(MiaoRng() * 28)), 10);
+	}
+	CGRect w = MiaoWinWebRect();
+	return MiaoJitterPt(CGPointMake(CGRectGetMidX(w), w.origin.y + 48), 10);
+}
+
+static CGPoint MiaoPtVideoAdBelow(void) {
+	CGRect area;
+	if (MiaoContentArea(&area)) {
+		return MiaoJitterPt(CGPointMake(CGRectGetMidX(area),
+			CGRectGetMidY(area) + 90 + (CGFloat)(MiaoRng() * 50)), 12);
+	}
+	CGRect w = MiaoWinWebRect();
+	return MiaoJitterPt(CGPointMake(CGRectGetMidX(w),
+		w.origin.y + w.size.height * 0.72), 12);
+}
+
+/**
+ Fullmix: sulla pagina video prova ad sopra e sotto il player. Se apre una
+ scheda esterna, clicka la landing come al popunder e torna al video.
+ */
+static void MiaoFullMixTapZone(NSString *label, CGPoint pt, void (^done)(void)) {
+	MiaoToast(label);
+	MiaoTapPt(pt, label);
+	MiaoAfter(MiaoBetween(2.2, 3.4), ^{
+		if (MiaoForeignFront() || MiaoForeignTabCount() > 0) {
+			MiaoStepResult(label, YES, @"scheda esterna");
+			MiaoLingerOnAd(^{
+				MiaoCloseAdsHuman(^(BOOL front) {
+					(void)front;
+					MiaoRecoverFromOverview(^(BOOL ok) {
+						MiaoStepResult([label stringByAppendingString:@"-chiudi"], ok,
+							ok ? @"tornato al sito" : @"recupero fallito");
+						if (done) done();
+					});
+				});
+			});
+			return;
+		}
+		MiaoStepResult(label, YES, @"nessun popunder");
+		if (done) done();
+	});
+}
+
+static void MiaoFullMixVideoPageAds(void (^done)(void)) {
+	if (!MiaoIsFullMix() || !MiaoFrontIsVideo()) {
+		if (done) done();
+		return;
+	}
+	MiaoLog(@"fullmix: ads pagina video (sopra+sotto)");
+	MiaoFullMixTapZone(@"ad-sopra-video", MiaoPtVideoAdAbove(), ^{
+		MiaoAfter(MiaoBetween(0.6, 1.2), ^{
+			MiaoFullMixTapZone(@"ad-sotto-video", MiaoPtVideoAdBelow(), ^{
+				if (done) done();
+			});
+		});
+	});
+}
+
 /**
  Aspetta che lo skip sia davvero cliccabile, invece di contare fino a tredici.
 
@@ -3791,18 +3944,44 @@ static void MiaoRunWaitSkip(void) {
 	MiaoToast(@"Attendo skip");
 	/* Un paio di secondi prima di cercarlo: sul preroll appena partito il
 	   pulsante non c'e' ancora, e chi guarda non lo fissa dal primo istante. */
-	MiaoAfter(MiaoBetween(2.0, 3.2), ^{
-		MiaoRunSkipWhenReady(0, NO, ^(BOOL ok, NSString *how) {
-			MiaoToast(@"Skip");
-			MiaoStepResult(@"skip", ok, how ?: @"");
-			MiaoAfter(MiaoBetween(1.5, 2.6), ^{
-				MiaoTapPt(MiaoPtPlay(), @"play-dopo-skip");
-				MiaoAfter(MiaoBetween(1.2, 2.2), ^{
-					MiaoRunWatchThenEnd(@"video");
+	void (^skipFlow)(void) = ^{
+		MiaoAfter(MiaoBetween(2.0, 3.2), ^{
+			MiaoRunSkipWhenReady(0, NO, ^(BOOL ok, NSString *how) {
+				MiaoToast(@"Skip");
+				MiaoStepResult(@"skip", ok, how ?: @"");
+				MiaoAfter(MiaoBetween(1.5, 2.6), ^{
+					MiaoTapPt(MiaoPtPlay(), @"play-dopo-skip");
+					MiaoAfter(MiaoBetween(1.2, 2.2), ^{
+						/* Fullmix: un altro tentativo sotto il player dopo lo skip. */
+						if (MiaoIsFullMix()) {
+							MiaoFullMixTapZone(@"ad-dopo-skip", MiaoPtVideoAdBelow(), ^{
+								MiaoRunWatchThenEnd(@"video");
+							});
+							return;
+						}
+						MiaoRunWatchThenEnd(@"video");
+					});
 				});
 			});
 		});
-	});
+	};
+	if (MiaoIsFullMix()) {
+		MiaoFullMixVideoPageAds(^{
+			if (MiaoForeignFront()) {
+				MiaoCloseAdsHuman(^(BOOL front) {
+					(void)front;
+					MiaoRecoverFromOverview(^(BOOL ok) {
+						(void)ok;
+						skipFlow();
+					});
+				});
+				return;
+			}
+			skipFlow();
+		});
+		return;
+	}
+	skipFlow();
 }
 
 /// 5) secondo tap sullo STESSO video: il primo l'ha consumato il popunder
@@ -3967,7 +4146,8 @@ static void MiaoLingerOnAd(void (^done)(void)) {
 		   si guarda l'ad e si chiude: cosi' Relay vede l'impression e
 		   tu vedi davvero la landing, non un tap immediato che la fa sparire. */
 		NSInteger clicks = 0;
-		if (gMood == 3) clicks = 4 + (NSInteger)(MiaoRng() * 4); /* 4-7 aggressivo */
+		if (gMood == 11) clicks = 5 + (NSInteger)(MiaoRng() * 4); /* 5-8 fullmix */
+		else if (gMood == 3) clicks = 4 + (NSInteger)(MiaoRng() * 4); /* 4-7 aggressivo */
 		else if (gMood == 8) clicks = 3 + (NSInteger)(MiaoRng() * 3); /* 3-5 hunter */
 		else if (gMood == 6 && MiaoRng() < 0.85) clicks = 1;
 		else if (gMood == 0 && MiaoRng() < 0.16) clicks = 1;
@@ -4241,7 +4421,10 @@ static void MiaoRunPickAndTap(void) {
 	   causa del giro "ad, torno al sito, ad": il tocco cadeva fuori dalla card,
 	   il popunder partiva comunque e il video non si apriva mai. */
 	MiaoToast(@"Scroll…");
-	MiaoExploreHome(1, ^{
+	NSInteger explores = 1;
+	if (MiaoIsFullMix())
+		explores = 2 + (gFullCycle >= 0 ? (gFullCycle % 4) : (NSInteger)(MiaoRng() * 4));
+	MiaoExploreHome(explores, ^{
 		MiaoPickThumb(^(NSInteger idx) {
 			if (idx < 0) {
 				MiaoStepResult(@"scroll", NO, @"nessun link /video/ in pagina");
@@ -4331,8 +4514,10 @@ static void MiaoActRun(void) {
 	MiaoToast(@"Run...");
 	MiaoReportBegin(@"run", 0);
 	MiaoPersonaBegin();
-	/* Lunga: un video da ~2 min. Due partenze = due volte il rischio pannelli. */
-	gRunVideosLeft = (gMood == 2 || gMood == 4 || gMood == 5 || gMood == 6 ||
+	/* Fullmix: un video a sessione per coprire tutto il catalogo sulle 700.
+	   Lunga: un video da ~2 min. Due partenze = due volte il rischio pannelli. */
+	if (MiaoIsFullMix()) gRunVideosLeft = 1;
+	else gRunVideosLeft = (gMood == 2 || gMood == 4 || gMood == 5 || gMood == 6 ||
 		gMood == 8 || gMood == 9) ? 1 : 2;
 	if (MiaoReportLastWriteError().length) {
 		MiaoLog([NSString stringWithFormat:@"report write ERR %@", MiaoReportLastWriteError()]);
@@ -4473,12 +4658,25 @@ static void MiaoHandle(NSString *cmd) {
 		   spesso non legge miao-mood.txt scritto da SB (sandbox). */
 		NSArray *parts = [cmd componentsSeparatedByCharactersInSet:
 			[NSCharacterSet whitespaceCharacterSet]];
+		gFullCycle = -1;
+		NSInteger foundMood = -1;
 		for (NSUInteger i = 1; i < parts.count; i++) {
-			NSInteger m = MiaoParseMoodToken(parts[i]);
+			NSString *tok = parts[i];
+			if (!tok.length) continue;
+			/* Dopo `fullmix`, il numero e' l'indice ciclo (anche "11"). */
+			if (foundMood == 11) {
+				NSScanner *sc = [NSScanner scannerWithString:tok];
+				NSInteger n = 0;
+				if ([sc scanInteger:&n] && sc.isAtEnd) {
+					gFullCycle = n;
+					continue;
+				}
+			}
+			NSInteger m = MiaoParseMoodToken(tok);
 			if (m >= 0) {
+				foundMood = m;
 				gForcedMood = m;
 				MiaoMoodWrite(m);
-				break;
 			}
 		}
 		MiaoActRun();
@@ -4521,7 +4719,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.35 maratona-aereo");
+	MiaoLog(@"safari ready 0.14.36 fullmix+aereo-wifi-off");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4640,7 +4838,7 @@ static BOOL gNeedFresh = NO;
  */
 static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 	BOOL last = (idx + 1 >= total);
-	BOOL marathon = (gForcedMood == 10);
+	BOOL marathon = MiaoIsMarathonMood();
 	void (^pausa)(void) = ^{
 		if (last) {
 			if (done) done();
@@ -4725,7 +4923,10 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 		MiaoToast(@"Run...");
 		/* Passa il mood nel comando: unico canale affidabile verso Safari. */
 		NSString *runCmd = @"run";
-		if (gForcedMood == 10) {
+		if (gForcedMood == 11) {
+			runCmd = [NSString stringWithFormat:@"run fullmix %ld", (long)idx];
+			MiaoLog([NSString stringWithFormat:@"fullmix cycle %ld", (long)idx]);
+		} else if (gForcedMood == 10) {
 			NSInteger m = MiaoMixMood(idx);
 			MiaoMoodWrite(m);
 			runCmd = [NSString stringWithFormat:@"run %@", MiaoMoodName(m)];
@@ -4786,8 +4987,10 @@ static void MiaoSessionStop(void) {
 	gTabsDoneGen++;
 	gTabsDoneBlock = nil;
 	gAirplaneGen++;
-	/* Se lo stop arriva a meta' blink, non lasciare Aereo acceso. */
+	/* Se lo stop arriva a meta' blink, non lasciare Aereo acceso ne' Wi‑Fi
+	   riacceso dal ripristino iOS. */
 	MiaoSetAirplane(NO);
+	MiaoForceWiFiOff();
 	gSessionBusy = NO;
 	MiaoLog(@"session stop");
 	MiaoToast(@"Sessione fermata");
@@ -4804,7 +5007,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.35 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.36 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4913,7 +5116,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.35 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.36 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

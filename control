@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.35
+Version: 0.14.36
 Architecture: iphoneos-arm64
-Description: Marathon auto-toggles Airplane Mode between sessions to nudge Relay.
+Description: Fullmix marathon 700 unique sessions, max ads, 30s watch, Wi-Fi forced off after Airplane.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
