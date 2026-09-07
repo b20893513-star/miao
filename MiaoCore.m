@@ -655,6 +655,75 @@ static void MiaoClearSafariDataNow(void (^done)(BOOL ok)) {
 	});
 }
 
+/**
+ Modalita Aereo via RadiosPreferences (solo SpringBoard / JB).
+
+ Su maratona: ON → pausa → OFF → attesa rete, per spingere Private Relay
+ a ripescare un exit. Non e' garantito un IP nuovo a ogni giro.
+ */
+static NSInteger gAirplaneGen = 0;
+
+static void MiaoRadiosPrefsLoad(void) {
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		dlopen("/System/Library/PrivateFrameworks/AppSupport.framework/AppSupport", RTLD_LAZY);
+	});
+}
+
+static id MiaoRadiosPrefs(void) {
+	MiaoRadiosPrefsLoad();
+	Class c = NSClassFromString(@"RadiosPreferences");
+	if (!c) return nil;
+	@try { return [[c alloc] init]; }
+	@catch (NSException *ex) { (void)ex; return nil; }
+}
+
+static BOOL MiaoSetAirplane(BOOL on) {
+	if (!MiaoIsSB()) return NO;
+	id prefs = MiaoRadiosPrefs();
+	if (!prefs) {
+		MiaoLog(@"aereo: RadiosPreferences assente");
+		return NO;
+	}
+	@try {
+		SEL set = NSSelectorFromString(@"setAirplaneMode:");
+		if (![prefs respondsToSelector:set])
+			set = NSSelectorFromString(@"setAirplaneModeEnabled:");
+		if ([prefs respondsToSelector:set])
+			((void (*)(id, SEL, BOOL))objc_msgSend)(prefs, set, on);
+		else
+			[prefs setValue:@(on) forKey:@"airplaneMode"];
+		SEL sync = NSSelectorFromString(@"synchronize");
+		if ([prefs respondsToSelector:sync])
+			((void (*)(id, SEL))objc_msgSend)(prefs, sync);
+		MiaoLog([NSString stringWithFormat:@"aereo: %@", on ? @"ON" : @"OFF"]);
+		return YES;
+	} @catch (NSException *ex) {
+		MiaoLog([NSString stringWithFormat:@"aereo fail %@", ex.reason ?: @"?"]);
+		return NO;
+	}
+}
+
+/// Solo maratona (mood mix): spegne/riaccende la rete tra una sessione e l'altra.
+static void MiaoMarathonAirplaneBlink(void (^done)(void)) {
+	NSInteger gen = ++gAirplaneGen;
+	MiaoToast(@"Aereo ON");
+	BOOL okOn = MiaoSetAirplane(YES);
+	MiaoLog([NSString stringWithFormat:@"maratona aereo: on=%d", okOn ? 1 : 0]);
+	MiaoAfter(MiaoBetween(8.0, 12.0), ^{
+		if (gen != gAirplaneGen) return;
+		MiaoToast(@"Aereo OFF");
+		BOOL okOff = MiaoSetAirplane(NO);
+		MiaoLog([NSString stringWithFormat:@"maratona aereo: off=%d", okOff ? 1 : 0]);
+		/* La radio e Relay ripartono dopo qualche secondo: senza questa
+		   attesa il ciclo dopo apre Safari senza rete. */
+		MiaoAfter(MiaoBetween(10.0, 15.0), ^{
+			if (gen != gAirplaneGen) return;
+			if (done) done();
+		});
+	});
+}
+
 static void MiaoClearSafariDataFromPanel(void) {
 	if (!MiaoIsSB()) return;
 	if (gSessionBusy) MiaoSessionStop();
@@ -4452,7 +4521,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.34 schede-zero-prima-del-kill");
+	MiaoLog(@"safari ready 0.14.35 maratona-aereo");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4567,15 +4636,25 @@ static BOOL gNeedFresh = NO;
  2) Chiude Safari + WebKit.Networking/WebContent.
  3) Cancella cookie, WebsiteData e BrowserState. Ogni sessione e' una
     prova a freddo (eta', storage, cap). Stesso wipe del tasto Cookie.
+ 4) Su maratona (mood mix): Modalita Aereo on/off prima del ciclo dopo.
  */
 static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 	BOOL last = (idx + 1 >= total);
+	BOOL marathon = (gForcedMood == 10);
 	void (^pausa)(void) = ^{
 		if (last) {
 			if (done) done();
 			return;
 		}
-		MiaoAfter(MiaoBetween(4.0, 7.0), ^{ if (done) done(); });
+		void (^go)(void) = ^{
+			MiaoAfter(MiaoBetween(4.0, 7.0), ^{ if (done) done(); });
+		};
+		if (marathon) {
+			MiaoLog(@"cycle reset: maratona → aereo");
+			MiaoMarathonAirplaneBlink(go);
+			return;
+		}
+		go();
 	};
 
 	void (^wipe)(void) = ^{
@@ -4706,6 +4785,9 @@ static void MiaoSessionStop(void) {
 	gRunEndBlock = nil;
 	gTabsDoneGen++;
 	gTabsDoneBlock = nil;
+	gAirplaneGen++;
+	/* Se lo stop arriva a meta' blink, non lasciare Aereo acceso. */
+	MiaoSetAirplane(NO);
 	gSessionBusy = NO;
 	MiaoLog(@"session stop");
 	MiaoToast(@"Sessione fermata");
@@ -4722,7 +4804,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.34 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.35 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4831,7 +4913,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.34 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.35 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

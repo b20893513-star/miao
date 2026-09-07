@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.34
+Version: 0.14.35
 Architecture: iphoneos-arm64
-Description: Verifies tab overview is empty before killing Safari between sessions.
+Description: Marathon auto-toggles Airplane Mode between sessions to nudge Relay.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
