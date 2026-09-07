@@ -505,6 +505,39 @@ static NSInteger MiaoClearSafariBrowsingData(void) {
 	return n;
 }
 
+/**
+ Solo stato schede / ripristino Safari — non tocca cookie ne' WebsiteData.
+
+ Dopo un kill, se BrowserState e' ancora pieno Safari riapre tutto lo stack
+ anche se a schermo avevamo chiuso le tab.
+ */
+static NSInteger MiaoWipeSafariTabState(void) {
+	NSInteger n = 0;
+	NSArray *paths = @[
+		@"/var/mobile/Library/Safari/BrowserState.db",
+		@"/var/mobile/Library/Safari/BrowserState.db-shm",
+		@"/var/mobile/Library/Safari/BrowserState.db-wal",
+		@"/var/mobile/Library/Safari/CloudTabs.db",
+		@"/var/mobile/Library/Safari/CloudTabs.db-shm",
+		@"/var/mobile/Library/Safari/CloudTabs.db-wal",
+		@"/var/mobile/Library/Safari/RecentlyClosedTabs.plist",
+		@"/var/mobile/Library/Safari/LastSession.plist",
+		@"/var/mobile/Library/Safari/SuspendState.plist",
+	];
+	for (NSString *p in paths) n += MiaoRemovePathTree(p);
+	NSString *safariDir = @"/var/mobile/Library/Safari";
+	for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:safariDir error:nil]) {
+		NSString *low = name.lowercaseString;
+		if ([low hasPrefix:@"browserstate"] || [low hasPrefix:@"cloudtabs"] ||
+			[low hasPrefix:@"recently"] || [low hasPrefix:@"lastsession"] ||
+			[low hasPrefix:@"suspend"]) {
+			n += MiaoRemovePathTree([safariDir stringByAppendingPathComponent:name]);
+		}
+	}
+	MiaoLog([NSString stringWithFormat:@"wipe-tab-state: rimossi %ld", (long)n]);
+	return n;
+}
+
 static void MiaoClearSafariDataFromPanel(void) {
 	if (!MiaoIsSB()) return;
 	if (gSessionBusy) MiaoSessionStop();
@@ -2207,71 +2240,154 @@ static BOOL MiaoLongPressNode(MiaoAXNode *n, NSString *label) {
  Chiude tutte le schede come farebbe una persona: pressione lunga sul pulsante
  delle schede, poi "Chiudi tutte le N schede".
 
- Serve perche' le API schede di iOS 16 spesso non rispondono, e in quel caso
- senza questa via le schede di una sessione resterebbero aperte in quella dopo.
+ Se il menu non esce, apre la panoramica e chiude le card una a una con la X.
  */
-static void MiaoCloseAllTabsHuman(void (^done)(BOOL ok)) {
+static void MiaoCloseAllTabsInGrid(NSInteger left, NSInteger closed, void (^done)(BOOL ok));
+static void MiaoCloseAllTabsHumanAttempt(NSInteger attempt, void (^done)(BOOL ok));
+
+static void MiaoCloseAllTabsInGrid(NSInteger left, NSInteger closed, void (^done)(BOOL ok)) {
+	if (left <= 0) {
+		MiaoLog([NSString stringWithFormat:@"chiudi griglia: stop dopo %ld", (long)closed]);
+		if (done) done(closed > 0);
+		return;
+	}
+	MiaoAXNode *x = nil;
+	for (MiaoAXNode *c in MiaoAXFindAll(MiaoNamesClose())) {
+		if (c.frame.size.width > 90 && c.frame.size.height > 90) continue;
+		x = c;
+		break;
+	}
+	BOOL tapped = NO;
+	if (x) tapped = MiaoTapNode(x, @"chiudi-scheda-griglia");
+	if (!tapped) {
+		MiaoAXNode *pick = nil;
+		CGFloat best = 0;
+		for (MiaoAXNode *n in MiaoAXNodes()) {
+			if (n.frame.size.width < 100 || n.frame.size.height < 120) continue;
+			CGFloat a = n.frame.size.width * n.frame.size.height;
+			if (a > best) { best = a; pick = n; }
+		}
+		if (pick) {
+			CGPoint p = CGPointMake(CGRectGetMaxX(pick.frame) - 22, pick.frame.origin.y + 22);
+			tapped = MiaoTapPt(p, @"chiudi-x-qualsiasi");
+		}
+	}
+	if (!tapped) {
+		MiaoLog([NSString stringWithFormat:@"chiudi griglia: niente X (chiuse %ld)", (long)closed]);
+		MiaoAXNode *fine = MiaoAXFind(MiaoNamesDone());
+		if (fine) MiaoTapNode(fine, @"fine-griglia");
+		if (done) done(closed > 0 || MiaoTabList(MiaoBrowser()).count == 0);
+		return;
+	}
+	MiaoAfter(MiaoBetween(0.45, 0.8), ^{
+		MiaoCloseAllTabsInGrid(left - 1, closed + 1, done);
+	});
+}
+
+static void MiaoCloseAllTabsHumanAttempt(NSInteger attempt, void (^done)(BOOL ok)) {
 	MiaoAXNode *btn = MiaoAXFind(MiaoNamesTabs());
-	if (!MiaoLongPressNode(btn, @"schede")) {
+	if (!btn) {
+		MiaoLog(@"chiudi tutte: pulsante schede assente");
 		if (done) done(NO);
 		return;
 	}
-	MiaoAfter(MiaoBetween(1.0, 1.6), ^{
-		MiaoAXNode *all = MiaoAXFind(MiaoNamesCloseAllTabs());
-		if (!all || !MiaoTapNode(all, @"chiudi-tutte")) {
-			MiaoLog([NSString stringWithFormat:@"chiudi tutte: voce assente\n%@", MiaoAXDump()]);
-			MiaoAXNode *cancel = MiaoAXFind(@[ @"Annulla", @"Cancel" ]);
-			if (cancel) MiaoTapNode(cancel, @"annulla-menu");
-			if (done) done(NO);
+	if (attempt == 0) {
+		MiaoTapNode(btn, @"schede-focus");
+		MiaoAfter(0.55, ^{ MiaoCloseAllTabsHumanAttempt(1, done); });
+		return;
+	}
+	if (!MiaoLongPressNode(btn, @"schede")) {
+		if (attempt < 3) {
+			MiaoAfter(0.7, ^{ MiaoCloseAllTabsHumanAttempt(attempt + 1, done); });
 			return;
 		}
-		/* iOS chiede conferma con un foglio che ripete la stessa frase. */
-		MiaoAfter(MiaoBetween(0.8, 1.4), ^{
+		MiaoTapNode(btn, @"schede-panoramica");
+		MiaoAfter(1.1, ^{ MiaoCloseAllTabsInGrid(14, 0, done); });
+		return;
+	}
+	MiaoAfter(MiaoBetween(1.1, 1.7), ^{
+		MiaoAXNode *all = MiaoAXFind(MiaoNamesCloseAllTabs());
+		if (!all || !MiaoTapNode(all, @"chiudi-tutte")) {
+			MiaoLog([NSString stringWithFormat:@"chiudi tutte: voce assente (tentativo %ld)\n%@",
+				(long)attempt, MiaoAXDump()]);
+			MiaoAXNode *cancel = MiaoAXFind(@[ @"Annulla", @"Cancel" ]);
+			if (cancel) MiaoTapNode(cancel, @"annulla-menu");
+			if (attempt < 3) {
+				MiaoAfter(0.8, ^{ MiaoCloseAllTabsHumanAttempt(attempt + 1, done); });
+				return;
+			}
+			MiaoTapNode(MiaoAXFind(MiaoNamesTabs()), @"schede-panoramica");
+			MiaoAfter(1.1, ^{ MiaoCloseAllTabsInGrid(14, 0, done); });
+			return;
+		}
+		MiaoAfter(MiaoBetween(0.9, 1.4), ^{
 			MiaoAXNode *conf = MiaoAXFind(MiaoNamesCloseAllTabs());
 			if (conf) MiaoTapNode(conf, @"conferma-chiudi-tutte");
-			MiaoAfter(MiaoBetween(0.9, 1.5), ^{ if (done) done(YES); });
+			MiaoAfter(MiaoBetween(1.0, 1.6), ^{
+				NSUInteger left = MiaoTabList(MiaoBrowser()).count;
+				MiaoLog([NSString stringWithFormat:@"chiudi tutte: dopo menu restano %lu",
+					(unsigned long)left]);
+				if (left > 0) {
+					MiaoTapNode(MiaoAXFind(MiaoNamesTabs()), @"schede-panoramica");
+					MiaoAfter(1.0, ^{ MiaoCloseAllTabsInGrid(14, 0, done); });
+					return;
+				}
+				if (done) done(YES);
+			});
 		});
+	});
+}
+
+static void MiaoCloseAllTabsHuman(void (^done)(BOOL ok)) {
+	MiaoCloseAllTabsHumanAttempt(0, done);
+}
+
+/**
+ Chiude tutte le schede senza aprire la home.
+
+ Tra sessioni non bisogna fare openURL prima del kill: altrimenti Safari
+ salva di nuovo una scheda nello stato e al riavvio la ripristina.
+ */
+static void MiaoActCloseAllTabs(void (^done)(BOOL ok)) {
+	id bc = MiaoBrowser();
+	NSArray *tabs = MiaoTabList(bc);
+	NSInteger closed = 0;
+	for (id tab in [tabs reverseObjectEnumerator])
+		if (MiaoCloseTab(bc, tab)) closed++;
+	MiaoLog([NSString stringWithFormat:@"closetabs: API chiuse %ld di %lu",
+		(long)closed, (unsigned long)tabs.count]);
+
+	void (^finish)(BOOL) = ^(BOOL ok) {
+		NSUInteger left = MiaoTabList(MiaoBrowser()).count;
+		MiaoLog([NSString stringWithFormat:@"closetabs: fine ok=%d restano %lu",
+			ok ? 1 : 0, (unsigned long)left]);
+		MiaoToast(left == 0 ? @"Schede chiuse" : @"Schede: incomplete");
+		if (done) done(left == 0);
+	};
+
+	if (MiaoTabList(MiaoBrowser()).count == 0) {
+		finish(YES);
+		return;
+	}
+	MiaoCloseAllTabsHuman(^(BOOL ok) {
+		(void)ok;
+		MiaoAfter(0.5, ^{ finish(MiaoTabList(MiaoBrowser()).count == 0); });
 	});
 }
 
 /**
  Riparte da una scheda pulita: chiude tutto e riapre la home.
 
- Va fatto tra una sessione e l'altra. Restando sulla scheda di prima il sito
- vede una visita sola che non finisce mai — stessa pagina, stessi timer, script
- degli ads ancora armati — e le schede lasciate indietro si accumulano fino a
- rallentare Safari.
-
- Se le API private chiudono solo una parte delle schede, si passa al gesto
- umano (pressione lunga → Chiudi tutte), altrimenti ne resta una e al
- riavvio di Safari torna quella.
+ Usato dopo il riavvio di Safari (ciclo a freddo), non prima del kill.
  */
 static void MiaoActFreshTab(void) {
-	id bc = MiaoBrowser();
-	NSArray *tabs = MiaoTabList(bc);
-	NSInteger closed = 0;
-	for (id tab in [tabs reverseObjectEnumerator])
-		if (MiaoCloseTab(bc, tab)) closed++;
-	MiaoLog([NSString stringWithFormat:@"scheda nuova: chiuse %ld di %lu",
-		(long)closed, (unsigned long)tabs.count]);
-
-	void (^apri)(void) = ^{
-		MiaoToast(@"Scheda nuova");
-		MiaoOpenURL(MiaoHomeURL());
-	};
-
-	NSArray *left = MiaoTabList(MiaoBrowser());
-	if (left.count > 0) {
-		MiaoLog([NSString stringWithFormat:
-			@"scheda nuova: restano %lu, chiudo tutte a mano",
-			(unsigned long)left.count]);
-		MiaoCloseAllTabsHuman(^(BOOL ok) {
-			(void)ok;
-			MiaoAfter(MiaoBetween(0.8, 1.4), apri);
+	MiaoActCloseAllTabs(^(BOOL ok) {
+		(void)ok;
+		MiaoAfter(MiaoBetween(0.6, 1.1), ^{
+			MiaoToast(@"Scheda nuova");
+			MiaoOpenURL(MiaoHomeURL());
 		});
-		return;
-	}
-	MiaoAfter(MiaoBetween(0.9, 1.6), apri);
+	});
 }
 
 /// La miniatura della nostra scheda nella griglia (grande, non un pulsantino).
@@ -4048,6 +4164,10 @@ static void MiaoHandle(NSString *cmd) {
 		MiaoCloseAdsHuman(^(BOOL front) {
 			MiaoToast(front ? @"Pulito" : @"Extra: sito NO");
 		});
+	} else if ([cmd isEqualToString:@"closetabs"]) {
+		MiaoActCloseAllTabs(^(BOOL ok) {
+			(void)ok;
+		});
 	} else if ([cmd isEqualToString:@"freshtab"]) {
 		MiaoActFreshTab();
 	} else if ([cmd isEqualToString:@"where"]) {
@@ -4107,11 +4227,11 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.30 cancella-cookie");
+	MiaoLog(@"safari ready 0.14.31 chiudi-schede-robusto");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
-						   @"closeextra", @"freshtab", @"where", @"calib", @"run", @"adloop",
+						   @"closeextra", @"closetabs", @"freshtab", @"where", @"calib", @"run", @"adloop",
 						   @"backsite", @"state", @"ax", @"scroll", @"back", @"clean" ]) {
 		NSString *full = [NSString stringWithFormat:@"com.noxlab.miao.%@", n];
 		int token = 0;
@@ -4179,11 +4299,11 @@ static BOOL gColdStart = NO;
 /**
  Chiude una sessione e prepara la prossima da uno stato pulito.
 
- Prima chiude tutte le schede (mentre Safari e' ancora vivo), poi chiude
- Safari. Se si termina Safari con le schede aperte, al riavvio le ripristina
- tutte — compreso lo stack ads — e il ciclo dopo riparte sporco. Chiudendole
- prima, lo stato salvato e' vuoto; al riavvio `freshtab` ripulisce eventuali
- residui e apre la home.
+ 1) Chiude le schede SENZA riaprire la home (openURL prima del kill faceva
+    salvare di nuovo una tab nello stato).
+ 2) Chiude Safari.
+ 3) Cancella BrowserState su disco: se il gesto UI e' fallito, al riavvio
+    non ripristina lo stack vecchio. I cookie restano intatti.
  */
 static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 	if (idx + 1 >= total) {
@@ -4191,13 +4311,16 @@ static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 		return;
 	}
 	MiaoToast(@"Chiudo schede");
-	MiaoSendCmd(@"freshtab");
-	/* Chiudi-tutte a mano puo' richiedere 4-6 s: non killare Safari mentre
-	   il gesto e' a meta', altrimenti resta lo stato vecchio su disco. */
-	MiaoAfter(MiaoBetween(6.5, 9.0), ^{
+	MiaoSendCmd(@"closetabs");
+	/* Menu + eventuale griglia X: fino a ~12 s. Non killare a meta' gesto. */
+	MiaoAfter(MiaoBetween(11.0, 13.5), ^{
 		MiaoToast(@"Chiudo Safari");
 		gColdStart = MiaoKillSafari();
-		MiaoAfter(MiaoBetween(5.0, 9.0), ^{ if (done) done(); });
+		MiaoAfter(1.4, ^{
+			NSInteger n = MiaoWipeSafariTabState();
+			MiaoLog([NSString stringWithFormat:@"cycle reset: tab-state wipe %ld", (long)n]);
+			MiaoAfter(MiaoBetween(4.0, 7.0), ^{ if (done) done(); });
+		});
 	});
 }
 
@@ -4220,12 +4343,12 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	/* Dopo il kill, Safari puo' comunque ripristinare una scheda (o la start
 	   page). Si ripulisce di nuovo e si apre la home prima del run. Le schede
 	   le abbiamo gia' chiuse prima del kill: questo e' il secondo passaggio. */
-	if (cold) MiaoAfter(7.5, ^{ MiaoSendCmd(@"freshtab"); });
+	if (cold) MiaoAfter(8.5, ^{ MiaoSendCmd(@"freshtab"); });
 
 	/* La calibrazione installa una sonda sulla pagina: si fa una volta sola e il
 	   risultato resta su disco. Se c'e' gia', non la rifacciamo. */
 	BOOL calibrated = [[NSFileManager defaultManager] fileExistsAtPath:kCalPath];
-	NSTimeInterval runAt = cold ? 18.0 : 4.5;
+	NSTimeInterval runAt = cold ? 22.0 : 4.5;
 	if (idx == 0 && !calibrated) {
 		MiaoAfter(3.8, ^{ MiaoSendCmd(@"calib"); });
 		// la calibrazione ora aspetta il DOM prima di misurare: diamole spazio
@@ -4313,7 +4436,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.30 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.31 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4422,7 +4545,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.30 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.31 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

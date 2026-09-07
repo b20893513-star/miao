@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.30
+Version: 0.14.31
 Architecture: iphoneos-arm64
-Description: Panel button clears Safari cookies and website data like Settings.
+Description: Closes all tabs more reliably before killing Safari; wipes tab restore state.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
