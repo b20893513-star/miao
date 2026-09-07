@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.31
+Version: 0.14.32
 Architecture: iphoneos-arm64
-Description: Closes all tabs more reliably before killing Safari; wipes tab restore state.
+Description: Safari signals when tabs are closed before SpringBoard kills it.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
