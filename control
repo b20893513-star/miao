@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.32
+Version: 0.14.33
 Architecture: iphoneos-arm64
-Description: Safari signals when tabs are closed before SpringBoard kills it.
+Description: After each session wipes Safari cookies and website data for independent trials.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks

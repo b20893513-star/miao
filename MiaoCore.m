@@ -399,13 +399,10 @@ static void MiaoOpenSafari(void) {
 }
 
 /**
- Chiude Safari per davvero, come lo si butta via dal selettore delle app.
-
- Da SpringBoard si passa da FBSSystemService; se quel metodo non c'e' si
- ricade sulla funzione di BackBoardServices, che in SpringBoard e' gia'
- caricata (niente dlopen, che con i path rootless e' un altro problema).
+ Termina un bundle da SpringBoard (Safari, WebKit.Networking, WebContent).
  */
-static BOOL MiaoKillSafari(void) {
+static BOOL MiaoTerminateBundle(NSString *bid) {
+	if (!bid.length) return NO;
 	Class c = NSClassFromString(@"FBSSystemService");
 	id svc = nil;
 	if (c) {
@@ -417,8 +414,8 @@ static BOOL MiaoKillSafari(void) {
 	if (svc && [svc respondsToSelector:term]) {
 		@try {
 			((void (*)(id, SEL, id, NSInteger, BOOL, id))objc_msgSend)(svc, term,
-				@"com.apple.mobilesafari", 1, NO, @"miao: sessione nuova");
-			MiaoLog(@"Safari chiuso via FBSSystemService");
+				bid, 1, NO, @"miao: sessione nuova");
+			MiaoLog([NSString stringWithFormat:@"terminato %@ via FBS", bid]);
 			return YES;
 		} @catch (NSException *ex) { (void)ex; }
 	}
@@ -427,13 +424,27 @@ static BOOL MiaoKillSafari(void) {
 	BKSTerm fn = (BKSTerm)dlsym(RTLD_DEFAULT,
 		"BKSTerminateApplicationForReasonAndReportWithDescription");
 	if (fn) {
-		fn((__bridge CFStringRef)@"com.apple.mobilesafari", 1, false,
+		fn((__bridge CFStringRef)bid, 1, false,
 		   (__bridge CFStringRef)@"miao: sessione nuova");
-		MiaoLog(@"Safari chiuso via BKS");
+		MiaoLog([NSString stringWithFormat:@"terminato %@ via BKS", bid]);
 		return YES;
 	}
-	MiaoLog(@"Safari non chiuso: nessuna via disponibile");
 	return NO;
+}
+
+/**
+ Chiude Safari e i processi WebKit che tengono aperti cookie e WebsiteData.
+
+ Impostazioni li ferma tutti prima del wipe: se resta Networking, i file
+ vengono riscritti e localStorage (eta' NoxReel) sopravvive.
+ */
+static BOOL MiaoKillSafari(void) {
+	BOOL ok = MiaoTerminateBundle(@"com.apple.mobilesafari");
+	MiaoTerminateBundle(@"com.apple.WebKit.Networking");
+	MiaoTerminateBundle(@"com.apple.WebKit.WebContent");
+	MiaoTerminateBundle(@"com.apple.SafariViewService");
+	if (!ok) MiaoLog(@"Safari non chiuso: nessuna via disponibile");
+	return ok;
 }
 
 /**
@@ -464,37 +475,45 @@ static pid_t MiaoSafariPid(void) {
 	return 0;
 }
 
-/// Safari e' ancora in esecuzione? Se il pid non si legge, si dice no e si va
-/// avanti a tempo: meglio che restare bloccati.
+/// pid > 0 e il processo risponde: vivo. pid 0 = sconosciuto, NON morto.
 static BOOL MiaoSafariAlive(void) {
 	pid_t p = MiaoSafariPid();
 	if (p <= 0) return NO;
 	return kill(p, 0) == 0;
 }
 
-/// Aspetta che il processo Safari sparisca, al massimo `tries` mezzi secondi.
-static void MiaoWaitSafariDead(NSInteger tries, void (^done)(BOOL dead)) {
-	if (!MiaoSafariAlive()) {
+/**
+ Aspetta che Safari sparisca.
+
+ Se il pid non si legge, prima si assumeva "morto" al primo giro e il wipe
+ partiva con Safari ancora in piedi. Ora: pid noto e kill(0) fallisce =
+ morto; pid sconosciuto = si aspettano almeno 2 s, poi si procede.
+ */
+static void MiaoWaitSafariDead(NSInteger tries, NSInteger elapsed, void (^done)(BOOL dead)) {
+	pid_t p = MiaoSafariPid();
+	if (p > 0 && kill(p, 0) == 0) {
+		if (tries <= 0) {
+			MiaoLog(@"kill: Safari ancora vivo dopo l'attesa");
+			if (done) done(NO);
+			return;
+		}
+		MiaoAfter(0.5, ^{ MiaoWaitSafariDead(tries - 1, elapsed + 1, done); });
+		return;
+	}
+	if (p > 0) {
 		if (done) done(YES);
 		return;
 	}
-	if (tries <= 0) {
-		MiaoLog(@"kill: Safari ancora vivo dopo l'attesa");
-		if (done) done(NO);
+	if (elapsed >= 4 || tries <= 0) {
+		MiaoLog(@"kill: pid Safari sconosciuto, procedo dopo attesa");
+		if (done) done(YES);
 		return;
 	}
-	MiaoAfter(0.5, ^{ MiaoWaitSafariDead(tries - 1, done); });
+	MiaoAfter(0.5, ^{ MiaoWaitSafariDead(tries - 1, elapsed + 1, done); });
 }
 
 static void MiaoSessionStop(void);
 
-/**
- Cancella cookie e dati siti di Safari, come Impostazioni → Safari →
- Cancella cronologia e dati.
-
- Va fatto da SpringBoard a Safari chiuso: i file restano altrimenti bloccati
- e WKWebsiteDataStore in un altro processo non tocca lo store di Safari.
- */
 static NSInteger MiaoRemovePathTree(NSString *path) {
 	NSFileManager *fm = [NSFileManager defaultManager];
 	BOOL isDir = NO;
@@ -506,11 +525,43 @@ static NSInteger MiaoRemovePathTree(NSString *path) {
 	return 0;
 }
 
+static BOOL MiaoPathExists(NSString *path) {
+	return [[NSFileManager defaultManager] fileExistsAtPath:path];
+}
+
+/**
+ Tracce che Impostazioni toglie e che fanno sopravvivere eta'/cap.
+
+ Se uno di questi c'e' ancora, il wipe non e' riuscito.
+ */
+static BOOL MiaoSiteDataStillPresent(void) {
+	NSArray *probe = @[
+		@"/var/mobile/Library/Cookies/Cookies.binarycookies",
+		@"/var/mobile/Library/WebKit/WebsiteData",
+		@"/var/mobile/Library/HTTPStorages/com.apple.mobilesafari",
+		@"/var/mobile/Library/HTTPStorages/com.apple.WebKit.Networking",
+		@"/var/mobile/Library/Safari/LocalStorage",
+		@"/var/mobile/Library/Safari/SafariResourceLoadStatistics",
+	];
+	for (NSString *p in probe) {
+		if (MiaoPathExists(p)) {
+			MiaoLog([NSString stringWithFormat:@"cleardata: resta %@", p]);
+			return YES;
+		}
+	}
+	return NO;
+}
+
+/**
+ Cancella cookie e dati siti di Safari (file su disco).
+
+ Va fatto a Safari e WebKit morti. Non e' WKWebsiteDataStore: da SpringBoard
+ quello store non e' raggiungibile, i file si.
+ */
 static NSInteger MiaoClearSafariBrowsingData(void) {
 	NSFileManager *fm = [NSFileManager defaultManager];
-	NSInteger n = 0;
+	__block NSInteger n = 0;
 
-	/* Cookie jar condiviso + HTTP storage di Safari */
 	n += MiaoRemovePathTree(@"/var/mobile/Library/Cookies");
 	[fm createDirectoryAtPath:@"/var/mobile/Library/Cookies"
   withIntermediateDirectories:YES attributes:nil error:nil];
@@ -526,89 +577,90 @@ static NSInteger MiaoClearSafariBrowsingData(void) {
 		@"/var/mobile/Library/Safari/CloudTabs.db-shm",
 		@"/var/mobile/Library/Safari/CloudTabs.db-wal",
 		@"/var/mobile/Library/Safari/RecentlyClosedTabs.plist",
+		@"/var/mobile/Library/Safari/LastSession.plist",
+		@"/var/mobile/Library/Safari/SuspendState.plist",
 		@"/var/mobile/Library/Safari/AutoFillCorrections.db",
 		@"/var/mobile/Library/Safari/PerSitePreferences.db",
 		@"/var/mobile/Library/Safari/PerSitePreferences.db-shm",
 		@"/var/mobile/Library/Safari/PerSitePreferences.db-wal",
+		@"/var/mobile/Library/Safari/LocalStorage",
+		@"/var/mobile/Library/Safari/Databases",
+		@"/var/mobile/Library/Safari/SafariResourceLoadStatistics",
+		@"/var/mobile/Library/Safari/Cookies.binarycookies",
 		@"/var/mobile/Library/HTTPStorages/com.apple.mobilesafari",
+		@"/var/mobile/Library/HTTPStorages/com.apple.WebKit.Networking",
+		@"/var/mobile/Library/HTTPStorages/com.apple.WebKit.WebContent",
 		@"/var/mobile/Library/WebKit/WebsiteData",
 		@"/var/mobile/Library/Caches/com.apple.mobilesafari",
 		@"/var/mobile/Library/Caches/com.apple.WebKit",
+		@"/var/mobile/Library/Caches/com.apple.WebKit.Networking",
+		@"/var/mobile/Library/Caches/com.apple.WebKit.WebContent",
 		@"/var/mobile/Library/Caches/WebKit",
 		@"/var/mobile/Library/Caches/com.apple.Safari",
 	];
 	for (NSString *p in exact) n += MiaoRemovePathTree(p);
 
-	/* Residui tipici nella cartella Safari (TopSites, Search, ecc.) */
-	NSString *safariDir = @"/var/mobile/Library/Safari";
-	NSArray *kids = [fm contentsOfDirectoryAtPath:safariDir error:nil];
-	for (NSString *name in kids) {
-		NSString *low = name.lowercaseString;
-		if ([low hasPrefix:@"history"] || [low hasPrefix:@"browserstate"] ||
+	void (^scan)(NSString *, BOOL (^)(NSString *)) = ^(NSString *dir, BOOL (^want)(NSString *low)) {
+		NSArray *kids = [fm contentsOfDirectoryAtPath:dir error:nil];
+		for (NSString *name in kids) {
+			if (want(name.lowercaseString))
+				n += MiaoRemovePathTree([dir stringByAppendingPathComponent:name]);
+		}
+	};
+	scan(@"/var/mobile/Library/Safari", ^BOOL(NSString *low) {
+		return [low hasPrefix:@"history"] || [low hasPrefix:@"browserstate"] ||
 			[low hasPrefix:@"cloudtabs"] || [low hasPrefix:@"topsites"] ||
 			[low hasPrefix:@"search"] || [low hasPrefix:@"recently"] ||
-			[low containsString:@"cookie"] || [low containsString:@"localstorage"]) {
-			n += MiaoRemovePathTree([safariDir stringByAppendingPathComponent:name]);
-		}
-	}
+			[low hasPrefix:@"lastsession"] || [low hasPrefix:@"suspend"] ||
+			[low containsString:@"cookie"] || [low containsString:@"localstorage"] ||
+			[low containsString:@"website"] || [low containsString:@"resource"] ||
+			[low containsString:@"storage"] || [low containsString:@"webkit"];
+	});
+	scan(@"/var/mobile/Library/HTTPStorages", ^BOOL(NSString *low) {
+		return [low containsString:@"safari"] || [low containsString:@"webkit"];
+	});
+	scan(@"/var/mobile/Library/Caches", ^BOOL(NSString *low) {
+		return [low containsString:@"safari"] || [low containsString:@"webkit"];
+	});
 
-	MiaoLog([NSString stringWithFormat:@"cleardata: rimossi %ld elementi", (long)n]);
+	MiaoLog([NSString stringWithFormat:@"cleardata: rimossi %ld elementi resta=%d",
+		(long)n, MiaoSiteDataStillPresent() ? 1 : 0]);
 	return n;
 }
 
 /**
- Solo stato schede / ripristino Safari — non tocca cookie ne' WebsiteData.
-
- Dopo un kill, se BrowserState e' ancora pieno Safari riapre tutto lo stack
- anche se a schermo avevamo chiuso le tab.
+ Kill Safari+WebKit, aspetta, wipe su disco. Usato dal tasto e dal reset
+ tra una sessione e l'altra (prove indipendenti: eta', storage, cap).
  */
-static NSInteger MiaoWipeSafariTabState(void) {
-	NSInteger n = 0;
-	NSArray *paths = @[
-		@"/var/mobile/Library/Safari/BrowserState.db",
-		@"/var/mobile/Library/Safari/BrowserState.db-shm",
-		@"/var/mobile/Library/Safari/BrowserState.db-wal",
-		@"/var/mobile/Library/Safari/CloudTabs.db",
-		@"/var/mobile/Library/Safari/CloudTabs.db-shm",
-		@"/var/mobile/Library/Safari/CloudTabs.db-wal",
-		@"/var/mobile/Library/Safari/RecentlyClosedTabs.plist",
-		@"/var/mobile/Library/Safari/LastSession.plist",
-		@"/var/mobile/Library/Safari/SuspendState.plist",
-	];
-	for (NSString *p in paths) n += MiaoRemovePathTree(p);
-	NSString *safariDir = @"/var/mobile/Library/Safari";
-	for (NSString *name in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:safariDir error:nil]) {
-		NSString *low = name.lowercaseString;
-		if ([low hasPrefix:@"browserstate"] || [low hasPrefix:@"cloudtabs"] ||
-			[low hasPrefix:@"recently"] || [low hasPrefix:@"lastsession"] ||
-			[low hasPrefix:@"suspend"]) {
-			n += MiaoRemovePathTree([safariDir stringByAppendingPathComponent:name]);
+static void MiaoClearSafariDataNow(void (^done)(BOOL ok)) {
+	MiaoKillSafari();
+	MiaoWaitSafariDead(16, 0, ^(BOOL dead) {
+		void (^wipe)(BOOL) = ^(BOOL d) {
+			NSInteger n = MiaoClearSafariBrowsingData();
+			BOOL left = MiaoSiteDataStillPresent();
+			BOOL ok = (n > 0 && !left);
+			MiaoLog([NSString stringWithFormat:
+				@"cleardata: n=%ld morto=%d resta=%d ok=%d",
+				(long)n, d ? 1 : 0, left ? 1 : 0, ok ? 1 : 0]);
+			if (done) done(ok);
+		};
+		if (dead) {
+			wipe(YES);
+			return;
 		}
-	}
-	MiaoLog([NSString stringWithFormat:@"wipe-tab-state: rimossi %ld", (long)n]);
-	return n;
+		MiaoKillSafari();
+		MiaoWaitSafariDead(10, 0, ^(BOOL dead2) {
+			wipe(dead2);
+		});
+	});
 }
 
 static void MiaoClearSafariDataFromPanel(void) {
 	if (!MiaoIsSB()) return;
 	if (gSessionBusy) MiaoSessionStop();
 	MiaoToast(@"Cancello cookie…");
-	MiaoKillSafari();
-	MiaoWaitSafariDead(16, ^(BOOL dead) {
-		if (!dead) {
-			MiaoKillSafari();
-			MiaoWaitSafariDead(8, ^(BOOL dead2) {
-				(void)dead2;
-				NSInteger n = MiaoClearSafariBrowsingData();
-				MiaoToast([NSString stringWithFormat:@"Cookie ok (%ld)", (long)n]);
-				MiaoLog([NSString stringWithFormat:@"pannello: cleardata n=%ld morto=%d",
-					(long)n, MiaoSafariAlive() ? 0 : 1]);
-			});
-			return;
-		}
-		NSInteger n = MiaoClearSafariBrowsingData();
-		MiaoToast([NSString stringWithFormat:@"Cookie ok (%ld)", (long)n]);
-		MiaoLog([NSString stringWithFormat:@"pannello: cleardata n=%ld", (long)n]);
+	MiaoClearSafariDataNow(^(BOOL ok) {
+		MiaoToast(ok ? @"Cookie ok" : @"Cookie: incompleto");
 	});
 }
 
@@ -4392,7 +4444,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.32 tabsdone-poi-kill");
+	MiaoLog(@"safari ready 0.14.33 cookie-dopo-sessione");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4503,51 +4555,38 @@ static BOOL gNeedFresh = NO;
 /**
  Chiude una sessione e prepara la prossima da uno stato pulito.
 
- 1) Chiude le schede SENZA riaprire la home (openURL prima del kill faceva
-    salvare di nuovo una tab nello stato) e aspetta che Safari confermi,
-    invece di contare su un timer: il gesto puo' durare 3 s o 15.
- 2) Chiude Safari e aspetta che il processo sparisca davvero.
- 3) Cancella BrowserState su disco. Solo a Safari morto: da vivo i file sono
-    suoi e uscendo li riscrive. I cookie restano intatti.
+ 1) Chiude le schede SENZA riaprire la home e aspetta tabsdone.
+ 2) Chiude Safari + WebKit.Networking/WebContent.
+ 3) Cancella cookie, WebsiteData e BrowserState. Ogni sessione e' una
+    prova a freddo (eta', storage, cap). Stesso wipe del tasto Cookie.
  */
 static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
-	if (idx + 1 >= total) {
-		if (done) done();
-		return;
-	}
-	void (^pausa)(void) = ^{ MiaoAfter(MiaoBetween(4.0, 7.0), ^{ if (done) done(); }); };
+	BOOL last = (idx + 1 >= total);
+	void (^pausa)(void) = ^{
+		if (last) {
+			if (done) done();
+			return;
+		}
+		MiaoAfter(MiaoBetween(4.0, 7.0), ^{ if (done) done(); });
+	};
 
 	void (^wipe)(void) = ^{
-		NSInteger n = MiaoWipeSafariTabState();
-		MiaoLog([NSString stringWithFormat:@"cycle reset: tab-state wipe %ld", (long)n]);
-		pausa();
+		MiaoToast(@"Cancello cookie");
+		MiaoClearSafariDataNow(^(BOOL ok) {
+			MiaoLog([NSString stringWithFormat:@"cycle reset: cookie %@",
+				ok ? @"ok" : @"incompleto"]);
+			gColdStart = YES;
+			gNeedFresh = YES;
+			pausa();
+		});
 	};
 
 	MiaoToast(@"Chiudo schede");
 	MiaoSendCmd(@"closetabs");
-	/* 28 s: menu + fino a 16 X. Senza tabsdone da Safari si aspettava
-	   sempre il tetto e il kill cadeva a gesto iniziato. */
 	MiaoAwaitTabsDone(28.0, ^(BOOL fromSafari) {
 		MiaoLog([NSString stringWithFormat:@"cycle reset: schede %@",
 			fromSafari ? @"confermate" : @"scadute"]);
-		MiaoToast(@"Chiudo Safari");
-		MiaoKillSafari();
-		MiaoWaitSafariDead(16, ^(BOOL dead) {
-			if (dead) {
-				gColdStart = YES;
-				gNeedFresh = YES;
-				wipe();
-				return;
-			}
-			/* Non e' morto: secondo colpo. freshtab va fatto comunque. */
-			MiaoKillSafari();
-			MiaoWaitSafariDead(10, ^(BOOL dead2) {
-				MiaoLog([NSString stringWithFormat:@"cycle reset: secondo kill morto=%d", dead2 ? 1 : 0]);
-				gColdStart = dead2;
-				gNeedFresh = YES;
-				wipe();
-			});
-		});
+		wipe();
 	});
 }
 
@@ -4667,7 +4706,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.32 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.33 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -4776,7 +4815,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.32 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.33 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
