@@ -192,8 +192,8 @@ static BOOL MiaoIsSiteURL(NSString *url) {
  sull'ad), un altro e' frettoloso ma non istantaneo, un altro e' normale.
  Mood 3 = click ads aggressivo; 4 = visione lunga; 5-9 altre mani;
  10 = mix (ogni ciclo una persona diversa).
- 11 = fullmix (maratona full: seed unico per ciclo, max ads, video a rotazione,
- visione >= 30 s).
+ 11 = fullmix (maratona full: seed unico per ciclo, 4 ads pagina video,
+ ads 3-5 s, priorita' al video del sito).
  */
 static uint32_t gRng = 0;
 static NSInteger gMood = 1;
@@ -309,7 +309,7 @@ static NSInteger MiaoMoodRead(void) {
 		unichar c = [line characterAtIndex:0];
 		if ([[NSCharacterSet decimalDigitCharacterSet] characterIsMember:c]) {
 			NSInteger n = [line integerValue];
-			if (n >= 0 && n <= 10) return n;
+			if (n >= 0 && n <= 11) return n;
 		}
 		NSInteger named = MiaoParseMoodToken(line);
 		if (named >= 0) return named;
@@ -358,13 +358,13 @@ static NSTimeInterval MiaoHumanDelay(NSTimeInterval base, NSTimeInterval spread)
 	/* skew: piu' spesso vicino a base, a volte molto di piu' */
 	double skew = u * u; // favorisce valori piccoli di u → pause medie, coda lunga se invertiamo
 	NSTimeInterval t = base * (0.75 + MiaoRng() * 0.55) + spread * (0.35 + skew * 0.9);
-	if (MiaoRng() < 0.14) t += MiaoBetween(1.1, 3.8); // si ferma a leggere / pensa
+	if (gMood != 11 && MiaoRng() < 0.14) t += MiaoBetween(1.1, 3.8);
 	if (gMood == 0 || gMood == 4 || gMood == 9) t *= 1.25;
 	else if (gMood == 2 || gMood == 5) t *= 0.78;
 	else if (gMood == 3 || gMood == 8) t *= 1.12;
 	else if (gMood == 6) t *= 1.40;
 	else if (gMood == 7) t *= 1.10;
-	else if (gMood == 11) t *= (0.95 + MiaoRng() * 0.45);
+	else if (gMood == 11) t *= 0.72;
 	return MAX(0.15, t);
 }
 
@@ -380,7 +380,7 @@ static NSTimeInterval MiaoAdDwell(void) {
 	else if (gMood == 7) t = MiaoBetween(5.0, 8.0);
 	else if (gMood == 8) t = MiaoBetween(10.0, 16.0);
 	else if (gMood == 9) t = MiaoBetween(4.0, 7.0);
-	else if (gMood == 11) t = MiaoBetween(10.0, 18.0); /* max ads: resta a cliccare */
+	else if (gMood == 11) return MiaoBetween(3.0, 5.0); /* fullmix: ads veloci */
 	else t = MiaoBetween(5.5, 10.0);
 	if (MiaoRng() < 0.2) t += MiaoBetween(2.0, 5.0);
 	return t;
@@ -3667,14 +3667,14 @@ static void MiaoRunNextOrEnd(NSString *msg) {
 }
 
 static void MiaoRunWatchThenEnd(NSString *msg) {
-	BOOL wantFS = (gMood != 2);
+	BOOL wantFS = (gMood != 2 && gMood != 11);
 	/* Visioni piu' brevi: su 700 sessioni la visione era oltre meta' del tempo
 	   totale, ~94 s per ciclo, e la maratona veniva 38 ore. I rapporti tra le
 	   persone restano gli stessi — videolong guarda ancora piu' del doppio di
 	   impatient — e nessuna scende sotto i 16 s, perche' non sappiamo da quale
 	   secondo il sito consideri valida una visione. */
 	NSTimeInterval minWatch;
-	if (gMood == 11) minWatch = MiaoBetween(30.0, 48.0); /* fullmix: almeno 30 s */
+	if (gMood == 11) minWatch = MiaoBetween(22.0, 30.0); /* sito, non le ads */
 	else if (gRunSecondVideo) minWatch = MiaoBetween(18.0, 28.0);
 	else if (gMood == 4) minWatch = MiaoBetween(38.0, 56.0);
 	else if (gMood == 2) minWatch = MiaoBetween(20.0, 30.0);
@@ -3808,34 +3808,35 @@ static void MiaoRunContinueToVideo(NSString *why) {
 }
 
 static CGPoint MiaoPtVideoAdAbove(void) {
-	CGRect area;
-	if (MiaoContentArea(&area)) {
-		return MiaoJitterPt(CGPointMake(CGRectGetMidX(area),
-			area.origin.y + 36 + (CGFloat)(MiaoRng() * 28)), 10);
-	}
-	CGRect w = MiaoWinWebRect();
-	return MiaoJitterPt(CGPointMake(CGRectGetMidX(w), w.origin.y + 48), 10);
+	CGRect p = MiaoPlayerRect();
+	return MiaoJitterPt(CGPointMake(CGRectGetMidX(p), p.origin.y - 28), 10);
+}
+
+/// Overlay / preroll sopra il player (non lo skip in basso a destra).
+static CGPoint MiaoPtVideoAdOn(void) {
+	CGRect p = MiaoPlayerRect();
+	return MiaoJitterPt(CGPointMake(CGRectGetMidX(p) - 18, CGRectGetMidY(p) - 8), 12);
 }
 
 static CGPoint MiaoPtVideoAdBelow(void) {
-	CGRect area;
-	if (MiaoContentArea(&area)) {
-		return MiaoJitterPt(CGPointMake(CGRectGetMidX(area),
-			CGRectGetMidY(area) + 90 + (CGFloat)(MiaoRng() * 50)), 12);
-	}
-	CGRect w = MiaoWinWebRect();
-	return MiaoJitterPt(CGPointMake(CGRectGetMidX(w),
-		w.origin.y + w.size.height * 0.72), 12);
+	CGRect p = MiaoPlayerRect();
+	return MiaoJitterPt(CGPointMake(CGRectGetMidX(p), CGRectGetMaxY(p) + 38), 10);
+}
+
+/// Seconda fascia sotto il player, piu' in basso (related / secondo banner).
+static CGPoint MiaoPtVideoAdBelow2(void) {
+	CGRect p = MiaoPlayerRect();
+	return MiaoJitterPt(CGPointMake(CGRectGetMidX(p), CGRectGetMaxY(p) + 148), 12);
 }
 
 /**
- Fullmix: sulla pagina video prova ad sopra e sotto il player. Se apre una
- scheda esterna, clicka la landing come al popunder e torna al video.
+ Fullmix: tap su una zona ads. Se apre una scheda, resta 3-5 s e torna al video.
+ Niente click extra sulla landing: la priorita' e' il sito.
  */
 static void MiaoFullMixTapZone(NSString *label, CGPoint pt, void (^done)(void)) {
 	MiaoToast(label);
 	MiaoTapPt(pt, label);
-	MiaoAfter(MiaoBetween(2.2, 3.4), ^{
+	MiaoAfter(MiaoBetween(1.4, 2.2), ^{
 		if (MiaoForeignFront() || MiaoForeignTabCount() > 0) {
 			MiaoStepResult(label, YES, @"scheda esterna");
 			MiaoLingerOnAd(^{
@@ -3860,11 +3861,21 @@ static void MiaoFullMixVideoPageAds(void (^done)(void)) {
 		if (done) done();
 		return;
 	}
-	MiaoLog(@"fullmix: ads pagina video (sopra+sotto)");
+	MiaoLog(@"fullmix: 4 ads pagina video (sopra, player, sotto, piu-sotto)");
 	MiaoFullMixTapZone(@"ad-sopra-video", MiaoPtVideoAdAbove(), ^{
-		MiaoAfter(MiaoBetween(0.6, 1.2), ^{
-			MiaoFullMixTapZone(@"ad-sotto-video", MiaoPtVideoAdBelow(), ^{
-				if (done) done();
+		MiaoAfter(0.35, ^{
+			MiaoFullMixTapZone(@"ad-nel-video", MiaoPtVideoAdOn(), ^{
+				MiaoAfter(0.35, ^{
+					MiaoFullMixTapZone(@"ad-sotto-video", MiaoPtVideoAdBelow(), ^{
+						MiaoGestureScroll(140 + (CGFloat)(MiaoRng() * 80), ^{
+							MiaoAfter(0.45, ^{
+								MiaoFullMixTapZone(@"ad-piu-sotto", MiaoPtVideoAdBelow2(), ^{
+									if (done) done();
+								});
+							});
+						});
+					});
+				});
 			});
 		});
 	});
@@ -3952,13 +3963,6 @@ static void MiaoRunWaitSkip(void) {
 				MiaoAfter(MiaoBetween(1.5, 2.6), ^{
 					MiaoTapPt(MiaoPtPlay(), @"play-dopo-skip");
 					MiaoAfter(MiaoBetween(1.2, 2.2), ^{
-						/* Fullmix: un altro tentativo sotto il player dopo lo skip. */
-						if (MiaoIsFullMix()) {
-							MiaoFullMixTapZone(@"ad-dopo-skip", MiaoPtVideoAdBelow(), ^{
-								MiaoRunWatchThenEnd(@"video");
-							});
-							return;
-						}
 						MiaoRunWatchThenEnd(@"video");
 					});
 				});
@@ -4117,6 +4121,14 @@ static void MiaoAdClicks(NSInteger left, void (^done)(void)) {
  */
 static void MiaoLingerOnAd(void (^done)(void)) {
 	NSTimeInterval budget = MiaoAdDwell();
+	/* Fullmix: un tap sulla zona basta, 3-5 s sulla landing e si chiude.
+	   I click extra sul creativo allungavano la sessione e toglievano tempo al video. */
+	if (MiaoIsFullMix()) {
+		MiaoLog([NSString stringWithFormat:@"ad dwell fullmix=%.1fs", budget]);
+		MiaoToast([NSString stringWithFormat:@"Ads… %.0fs", budget]);
+		MiaoAfter(budget, ^{ if (done) done(); });
+		return;
+	}
 	NSTimeInterval t0 = MiaoBetween(1.4, MIN(3.8, budget * 0.4));
 	MiaoLog([NSString stringWithFormat:@"ad dwell total=%.1fs first=%.1fs mood=%ld",
 		budget, t0, (long)gMood]);
@@ -4146,8 +4158,7 @@ static void MiaoLingerOnAd(void (^done)(void)) {
 		   si guarda l'ad e si chiude: cosi' Relay vede l'impression e
 		   tu vedi davvero la landing, non un tap immediato che la fa sparire. */
 		NSInteger clicks = 0;
-		if (gMood == 11) clicks = 5 + (NSInteger)(MiaoRng() * 4); /* 5-8 fullmix */
-		else if (gMood == 3) clicks = 4 + (NSInteger)(MiaoRng() * 4); /* 4-7 aggressivo */
+		if (gMood == 3) clicks = 4 + (NSInteger)(MiaoRng() * 4); /* 4-7 aggressivo */
 		else if (gMood == 8) clicks = 3 + (NSInteger)(MiaoRng() * 3); /* 3-5 hunter */
 		else if (gMood == 6 && MiaoRng() < 0.85) clicks = 1;
 		else if (gMood == 0 && MiaoRng() < 0.16) clicks = 1;
@@ -4421,10 +4432,7 @@ static void MiaoRunPickAndTap(void) {
 	   causa del giro "ad, torno al sito, ad": il tocco cadeva fuori dalla card,
 	   il popunder partiva comunque e il video non si apriva mai. */
 	MiaoToast(@"Scroll…");
-	NSInteger explores = 1;
-	if (MiaoIsFullMix())
-		explores = 2 + (gFullCycle >= 0 ? (gFullCycle % 4) : (NSInteger)(MiaoRng() * 4));
-	MiaoExploreHome(explores, ^{
+	MiaoExploreHome(1, ^{
 		MiaoPickThumb(^(NSInteger idx) {
 			if (idx < 0) {
 				MiaoStepResult(@"scroll", NO, @"nessun link /video/ in pagina");
@@ -4719,7 +4727,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.36 fullmix+aereo-wifi-off");
+	MiaoLog(@"safari ready 0.14.37 fullmix-ads-corte");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4834,7 +4842,7 @@ static BOOL gNeedFresh = NO;
  2) Chiude Safari + WebKit.Networking/WebContent.
  3) Cancella cookie, WebsiteData e BrowserState. Ogni sessione e' una
     prova a freddo (eta', storage, cap). Stesso wipe del tasto Cookie.
- 4) Su maratona (mood mix): Modalita Aereo on/off prima del ciclo dopo.
+ 4) Su maratona (mix e fullmix): Modalita Aereo on/off prima del ciclo dopo.
  */
 static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 	BOOL last = (idx + 1 >= total);
@@ -4945,11 +4953,11 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 		MiaoAwaitRunEnd(300.0, ^(BOOL fromSafari) {
 			MiaoLog(fromSafari ? @"cycle: run concluso" : @"cycle: timeout attesa run");
 			if (!fromSafari) MiaoToast(@"Run: timeout");
-			/* Niente `human`: erano scroll dopo la visione e uscivano dal FS. */
-			MiaoAfter(1.0, ^{
-				MiaoSendCmd(@"closeextra");
-				MiaoAfter(1.2, ^{ MiaoCycleReset(idx, total, done); });
-			});
+			/* Niente closeextra qui: il teardown del run ha gia' chiuso le ads,
+			   e closetabs chiude TUTTO prima del kill. Prima si mandava
+			   closeextra e dopo 1.2 s si partiva col kill: con 4 schede ads
+			   il gesto era ancora in corso e Safari ripristinava lo stack. */
+			MiaoAfter(0.8, ^{ MiaoCycleReset(idx, total, done); });
 		});
 	});
 }
@@ -5007,7 +5015,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.36 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.37 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -5116,7 +5124,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.36 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.37 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();

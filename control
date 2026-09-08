@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.36
+Version: 0.14.37
 Architecture: iphoneos-arm64
-Description: Fullmix marathon 700 unique sessions, max ads, 30s watch, Wi-Fi forced off after Airplane.
+Description: Fullmix clicks 4 video-page ads, 3-5s on landings, then watches the site video.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
