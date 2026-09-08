@@ -192,8 +192,7 @@ static BOOL MiaoIsSiteURL(NSString *url) {
  sull'ad), un altro e' frettoloso ma non istantaneo, un altro e' normale.
  Mood 3 = click ads aggressivo; 4 = visione lunga; 5-9 altre mani;
  10 = mix (ogni ciclo una persona diversa).
- 11 = fullmix (maratona full: seed unico per ciclo, 4 ads pagina video,
- ads 3-5 s, priorita' al video del sito).
+ 11 = fullmix (seed unico, skip poi 4 ads DOM, 1 click creativo, video sito).
  */
 static uint32_t gRng = 0;
 static NSInteger gMood = 1;
@@ -3807,6 +3806,65 @@ static void MiaoRunContinueToVideo(NSString *why) {
 	});
 }
 
+static NSString *const kMiaoJSFindVideoPageAds =
+	@"(function(){"
+	@"function vis(el){"
+	@"  if(!el) return false;"
+	@"  var r=el.getBoundingClientRect();"
+	@"  return r.width>=36&&r.height>=28&&r.bottom>8&&r.top<window.innerHeight-8;"
+	@"}"
+	@"function txt(el){return ((el.innerText||el.getAttribute('aria-label')||'')+'').toLowerCase();}"
+	@"function href(el){"
+	@"  return (el.getAttribute('real-href')||el.href||el.getAttribute('href')||"
+	@"    el.getAttribute('data-href')||el.getAttribute('data-click-url')||'')+'';"
+	@"}"
+	@"function isSkip(el){var t=txt(el); return /skip|salta/.test(t)&&t.length<40;}"
+	@"function looksAd(el){"
+	@"  if(!el||isSkip(el)) return false;"
+	@"  var tag=(el.tagName||'').toLowerCase();"
+	@"  if(tag==='iframe') return true;"
+	@"  var s=((el.id||'')+' '+(el.className||'')+' '+(el.getAttribute('data-name')||'')+' '+href(el)).toLowerCase();"
+	@"  if(/adsbygoogle|google_ads|gpt-ad|exo-|vast|ima-|preroll|banner|sponsor/.test(s)) return true;"
+	@"  if(/click\\.php|\\/click|out\\.php|redirect|real-href/.test(s)) return true;"
+	@"  var h=href(el).toLowerCase();"
+	@"  if(/^https?:/.test(h)&&h.indexOf('noxreel')<0&&h.indexOf('/video/')<0) return true;"
+	@"  return false;"
+	@"}"
+	@"var v=document.querySelector('video[data-nox-content]');"
+	@"if(!v){"
+	@"  var all=document.querySelectorAll('video');"
+	@"  for(var i=0;i<all.length;i++){"
+	@"    var src=((all[i].currentSrc||all[i].src||'')+' '+(all[i].id||'')+' '+(all[i].className||'')).toLowerCase();"
+	@"    if(/ad|vast|ima|preroll/.test(src)) continue;"
+	@"    if(location.pathname.indexOf('/video/')>=0){v=all[i];break;}"
+	@"  }"
+	@"}"
+	@"var vr=v?v.getBoundingClientRect():{top:90,bottom:320,left:0,right:window.innerWidth};"
+	@"var nodes=[].slice.call(document.querySelectorAll("
+	@"  'iframe,ins,a[real-href],a[href*=\"click\"],a[href*=\"out.php\"],a[href*=\"redirect\"],"
+	@"  [id*=\"google_ads\"],[id*=\"ad-\"],[class*=\"ad-\"],[class*=\"ads-\"],[class*=\"banner\"]'));"
+	@"var slots={above:null,on:null,below:null,far:null};"
+	@"function pack(el,slot){"
+	@"  var r=el.getBoundingClientRect();"
+	@"  var fx=0.5+(Math.random()-0.5)*0.36, fy=0.5+(Math.random()-0.5)*0.36;"
+	@"  var rec={x:Math.round(r.left+r.width*fx),y:Math.round(r.top+r.height*fy),"
+	@"    area:r.width*r.height,tag:(el.tagName||'EL')};"
+	@"  if(!slots[slot]||rec.area>slots[slot].area) slots[slot]=rec;"
+	@"}"
+	@"for(var i=0;i<nodes.length;i++){"
+	@"  var el=nodes[i];"
+	@"  if(!vis(el)||!looksAd(el)) continue;"
+	@"  var r=el.getBoundingClientRect();"
+	@"  var mid=(r.top+r.bottom)/2;"
+	@"  if(r.bottom<=vr.top+28) pack(el,'above');"
+	@"  else if(mid>=vr.top-12&&mid<=vr.bottom+12) pack(el,'on');"
+	@"  else if(r.top>=vr.bottom-10&&r.top<vr.bottom+140) pack(el,'below');"
+	@"  else if(r.top>=vr.bottom+90) pack(el,'far');"
+	@"}"
+	@"function out(k){var s=slots[k];return s?k+':'+s.x+','+s.y+','+s.tag:k+':NONE';}"
+	@"return [out('above'),out('on'),out('below'),out('far')].join('|');"
+	@"})()";
+
 static CGPoint MiaoPtVideoAdAbove(void) {
 	CGRect p = MiaoPlayerRect();
 	return MiaoJitterPt(CGPointMake(CGRectGetMidX(p), p.origin.y - 28), 10);
@@ -3830,30 +3888,73 @@ static CGPoint MiaoPtVideoAdBelow2(void) {
 }
 
 /**
- Fullmix: tap su una zona ads. Se apre una scheda, resta 3-5 s e torna al video.
- Niente click extra sulla landing: la priorita' e' il sito.
+ Fullmix: tap su una zona ads (punto DOM se c'e', altrimenti geometria).
+ Se apre una landing, un tap sul creativo (quello che Relay conta) e 3-5 s.
  */
-static void MiaoFullMixTapZone(NSString *label, CGPoint pt, void (^done)(void)) {
+static BOOL MiaoParseVideoAdSlot(NSString *chunk, CGPoint *out) {
+	if (!chunk.length || !out) return NO;
+	NSRange colon = [chunk rangeOfString:@":"];
+	if (colon.location == NSNotFound) return NO;
+	NSString *val = [chunk substringFromIndex:colon.location + 1];
+	if ([val hasPrefix:@"NONE"]) return NO;
+	NSArray *xy = [val componentsSeparatedByString:@","];
+	if (xy.count < 2) return NO;
+	*out = CGPointMake([xy[0] doubleValue], [xy[1] doubleValue]);
+	return out->x > 1 || out->y > 1;
+}
+
+static void MiaoFullMixTapZone(NSString *label, CGPoint vp, CGPoint geo, void (^done)(void)) {
 	MiaoToast(label);
-	MiaoTapPt(pt, label);
-	MiaoAfter(MiaoBetween(1.4, 2.2), ^{
-		if (MiaoForeignFront() || MiaoForeignTabCount() > 0) {
-			MiaoStepResult(label, YES, @"scheda esterna");
-			MiaoLingerOnAd(^{
-				MiaoCloseAdsHuman(^(BOOL front) {
-					(void)front;
-					MiaoRecoverFromOverview(^(BOOL ok) {
-						MiaoStepResult([label stringByAppendingString:@"-chiudi"], ok,
-							ok ? @"tornato al sito" : @"recupero fallito");
-						if (done) done();
-					});
-				});
-			});
+	BOOL fromDom = (vp.x > 1 || vp.y > 1);
+	BOOL tapped = NO;
+	if (fromDom) tapped = MiaoTrustedTapViewport(vp, label);
+	if (!tapped) {
+		tapped = MiaoTapPt(geo, [label stringByAppendingString:@"-geo"]);
+		fromDom = NO;
+	}
+	MiaoAfter(MiaoBetween(2.6, 3.8), ^{
+		BOOL opened = MiaoForeignFront() || MiaoForeignTabCount() > 0;
+		MiaoStepResult(label, opened || fromDom,
+			opened ? @"aperto" : (fromDom ? @"tap DOM, nessuna scheda" : @"mancato"));
+		if (!opened) {
+			if (done) done();
 			return;
 		}
-		MiaoStepResult(label, YES, @"nessun popunder");
-		if (done) done();
+		MiaoLingerOnAd(^{
+			MiaoCloseAdsHuman(^(BOOL front) {
+				(void)front;
+				MiaoRecoverFromOverview(^(BOOL ok) {
+					MiaoStepResult([label stringByAppendingString:@"-chiudi"], ok,
+						ok ? @"tornato al sito" : @"recupero fallito");
+					if (done) done();
+				});
+			});
+		});
 	});
+}
+
+static void MiaoFullMixTapSlots(NSInteger i, NSArray<NSValue *> *vps, NSArray<NSValue *> *geos,
+							   NSArray<NSString *> *labels, void (^done)(void)) {
+	if (i >= (NSInteger)labels.count) {
+		if (done) done();
+		return;
+	}
+	CGPoint vp = [vps[(NSUInteger)i] CGPointValue];
+	CGPoint geo = [geos[(NSUInteger)i] CGPointValue];
+	void (^next)(void) = ^{
+		MiaoAfter(0.35, ^{
+			MiaoFullMixTapSlots(i + 1, vps, geos, labels, done);
+		});
+	};
+	if (i == 3) {
+		MiaoGestureScroll(120 + (CGFloat)(MiaoRng() * 70), ^{
+			MiaoAfter(0.4, ^{
+				MiaoFullMixTapZone(labels[(NSUInteger)i], vp, geo, next);
+			});
+		});
+		return;
+	}
+	MiaoFullMixTapZone(labels[(NSUInteger)i], vp, geo, next);
 }
 
 static void MiaoFullMixVideoPageAds(void (^done)(void)) {
@@ -3861,23 +3962,32 @@ static void MiaoFullMixVideoPageAds(void (^done)(void)) {
 		if (done) done();
 		return;
 	}
-	MiaoLog(@"fullmix: 4 ads pagina video (sopra, player, sotto, piu-sotto)");
-	MiaoFullMixTapZone(@"ad-sopra-video", MiaoPtVideoAdAbove(), ^{
-		MiaoAfter(0.35, ^{
-			MiaoFullMixTapZone(@"ad-nel-video", MiaoPtVideoAdOn(), ^{
-				MiaoAfter(0.35, ^{
-					MiaoFullMixTapZone(@"ad-sotto-video", MiaoPtVideoAdBelow(), ^{
-						MiaoGestureScroll(140 + (CGFloat)(MiaoRng() * 80), ^{
-							MiaoAfter(0.45, ^{
-								MiaoFullMixTapZone(@"ad-piu-sotto", MiaoPtVideoAdBelow2(), ^{
-									if (done) done();
-								});
-							});
-						});
-					});
-				});
-			});
-		});
+	MiaoLog(@"fullmix: 4 ads pagina video dal DOM");
+	MiaoJS(kMiaoJSFindVideoPageAds, ^(NSString *raw) {
+		MiaoLog([NSString stringWithFormat:@"fullmix ads DOM %@", raw ?: @"nil"]);
+		NSArray *parts = [(raw ?: @"") componentsSeparatedByString:@"|"];
+		CGPoint none = CGPointZero;
+		CGPoint above = none, on = none, below = none, far = none;
+		for (NSString *p in parts) {
+			if ([p hasPrefix:@"above:"]) MiaoParseVideoAdSlot(p, &above);
+			else if ([p hasPrefix:@"on:"]) MiaoParseVideoAdSlot(p, &on);
+			else if ([p hasPrefix:@"below:"]) MiaoParseVideoAdSlot(p, &below);
+			else if ([p hasPrefix:@"far:"]) MiaoParseVideoAdSlot(p, &far);
+		}
+		NSArray *vps = @[
+			[NSValue valueWithCGPoint:above],
+			[NSValue valueWithCGPoint:on],
+			[NSValue valueWithCGPoint:below],
+			[NSValue valueWithCGPoint:far],
+		];
+		NSArray *geos = @[
+			[NSValue valueWithCGPoint:MiaoPtVideoAdAbove()],
+			[NSValue valueWithCGPoint:MiaoPtVideoAdOn()],
+			[NSValue valueWithCGPoint:MiaoPtVideoAdBelow()],
+			[NSValue valueWithCGPoint:MiaoPtVideoAdBelow2()],
+		];
+		NSArray *labels = @[ @"ad-sopra-video", @"ad-nel-video", @"ad-sotto-video", @"ad-piu-sotto" ];
+		MiaoFullMixTapSlots(0, vps, geos, labels, done);
 	});
 }
 
@@ -3960,6 +4070,34 @@ static void MiaoRunWaitSkip(void) {
 			MiaoRunSkipWhenReady(0, NO, ^(BOOL ok, NSString *how) {
 				MiaoToast(@"Skip");
 				MiaoStepResult(@"skip", ok, how ?: @"");
+				void (^watch)(void) = ^{
+					MiaoAfter(MiaoBetween(1.2, 2.0), ^{
+						MiaoTapPt(MiaoPtPlay(), @"play-dopo-skip");
+						MiaoAfter(MiaoBetween(1.0, 1.8), ^{
+							MiaoRunWatchThenEnd(@"video");
+						});
+					});
+				};
+				/* Fullmix: skip PRIMA, poi le 4 ads della pagina (layout del video,
+				   non del preroll), poi si guarda il contenuto. */
+				if (MiaoIsFullMix()) {
+					MiaoAfter(MiaoBetween(0.8, 1.4), ^{
+						MiaoFullMixVideoPageAds(^{
+							if (MiaoForeignFront()) {
+								MiaoCloseAdsHuman(^(BOOL front) {
+									(void)front;
+									MiaoRecoverFromOverview(^(BOOL rec) {
+										(void)rec;
+										watch();
+									});
+								});
+								return;
+							}
+							watch();
+						});
+					});
+					return;
+				}
 				MiaoAfter(MiaoBetween(1.5, 2.6), ^{
 					MiaoTapPt(MiaoPtPlay(), @"play-dopo-skip");
 					MiaoAfter(MiaoBetween(1.2, 2.2), ^{
@@ -3969,22 +4107,6 @@ static void MiaoRunWaitSkip(void) {
 			});
 		});
 	};
-	if (MiaoIsFullMix()) {
-		MiaoFullMixVideoPageAds(^{
-			if (MiaoForeignFront()) {
-				MiaoCloseAdsHuman(^(BOOL front) {
-					(void)front;
-					MiaoRecoverFromOverview(^(BOOL ok) {
-						(void)ok;
-						skipFlow();
-					});
-				});
-				return;
-			}
-			skipFlow();
-		});
-		return;
-	}
 	skipFlow();
 }
 
@@ -4121,12 +4243,14 @@ static void MiaoAdClicks(NSInteger left, void (^done)(void)) {
  */
 static void MiaoLingerOnAd(void (^done)(void)) {
 	NSTimeInterval budget = MiaoAdDwell();
-	/* Fullmix: un tap sulla zona basta, 3-5 s sulla landing e si chiude.
-	   I click extra sul creativo allungavano la sessione e toglievano tempo al video. */
+	/* Fullmix: un tap sul creativo (Relay conta questo), poi 3-5 s e si chiude. */
 	if (MiaoIsFullMix()) {
-		MiaoLog([NSString stringWithFormat:@"ad dwell fullmix=%.1fs", budget]);
+		MiaoLog([NSString stringWithFormat:@"ad dwell fullmix=%.1fs + creativo", budget]);
 		MiaoToast([NSString stringWithFormat:@"Ads… %.0fs", budget]);
-		MiaoAfter(budget, ^{ if (done) done(); });
+		MiaoTapAdOnFront(^(BOOL ok, NSString *detail) {
+			MiaoStepResult(@"ad-click", ok, detail ?: @"landing");
+			MiaoAfter(budget, ^{ if (done) done(); });
+		});
 		return;
 	}
 	NSTimeInterval t0 = MiaoBetween(1.4, MIN(3.8, budget * 0.4));
@@ -4727,7 +4851,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.37 fullmix-ads-corte");
+	MiaoLog(@"safari ready 0.14.38 fullmix-click-contati");
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -5015,7 +5139,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.37 x%ld mood=%ld",
+	MiaoLog([NSString stringWithFormat:@"session 0.14.38 x%ld mood=%ld",
 		(long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
@@ -5124,7 +5248,7 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.37 - app o 3x Vol");
+		MiaoToast(@"Miao 0.14.38 - app o 3x Vol");
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
