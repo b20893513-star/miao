@@ -663,7 +663,7 @@ static BOOL MiaoSiteDataStillPresent(void) {
 static NSInteger MiaoWipeSafariDir(NSString *dir, BOOL container) {
 	if (!dir.length) return 0;
 	NSFileManager *fm = [NSFileManager defaultManager];
-	NSInteger n = 0;
+	__block NSInteger n = 0;
 	NSMutableArray *exact = [NSMutableArray arrayWithObjects:
 		@"Library/Cookies",
 		@"Library/Caches/WebKit",
@@ -5041,6 +5041,25 @@ static void MiaoConsumeFile(void) {
 	MiaoHandle(cmd);
 }
 
+/// Il notify `run` arriva sul verbo; il file ha `run fullmix N`.
+/// Si aspetta il file invece di Handle("run") che azzerava il ciclo.
+static void MiaoWaitCmdFile(NSString *verb, NSInteger left) {
+	NSString *raw = [NSString stringWithContentsOfFile:kCmdPath encoding:NSUTF8StringEncoding error:nil];
+	if (raw.length) {
+		MiaoConsumeFile();
+		return;
+	}
+	if (left > 0) {
+		MiaoAfter(0.1, ^{ MiaoWaitCmdFile(verb, left - 1); });
+		return;
+	}
+	if ([verb isEqualToString:@"run"]) {
+		MiaoLog(@"run notify senza file, ignoro");
+		return;
+	}
+	MiaoHandle(verb);
+}
+
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
@@ -5054,29 +5073,7 @@ void MiaoStartSafari(void) {
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
 			(void)t;
-			/* Il notify `run` parte sul verbo; il file ha `run fullmix N`.
-			   Se il file non e' ancora visibile e si fa Handle("run"),
-			   gFullCycle resta -1 e si perde la rotazione. Si aspetta. */
-			__block NSInteger left = 8;
-			__block void (^tryFile)(void) = nil;
-			tryFile = [^{
-				NSString *raw = [NSString stringWithContentsOfFile:kCmdPath
-														 encoding:NSUTF8StringEncoding error:nil];
-				if (raw.length) {
-					MiaoConsumeFile();
-					return;
-				}
-				if (left-- > 0) {
-					MiaoAfter(0.1, tryFile);
-					return;
-				}
-				if ([n isEqualToString:@"run"]) {
-					MiaoLog(@"run notify senza file, ignoro");
-					return;
-				}
-				MiaoHandle(n);
-			} copy];
-			tryFile();
+			MiaoWaitCmdFile(n, 8);
 		});
 	}
 	[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(__unused NSTimer *tm) {
