@@ -20,6 +20,7 @@ static NSTimeInterval gLastVol = 0;
 static BOOL gBootDone = NO;
 static BOOL gSessionBusy = NO;
 static BOOL gSafariPollStarted = NO;
+#define MIAO_VERSION @"0.14.39"
 
 static NSString *const kPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
 static NSString *const kHomeDefault = @"https://noxreel.uk/";
@@ -34,6 +35,10 @@ static NSString *const kMoodPathFallback =
 /// Safari sandbox: stesso path JB usato dagli events.
 static NSString *const kMoodPathJB =
 	@"/var/jb/var/mobile/Library/Miao/mood.txt";
+/// Checkpoint maratona: se SpringBoard muore a meta', al boot riparte da qui.
+static NSString *const kSessionPath = @"/var/mobile/Documents/miao-session.txt";
+static NSString *const kSessionPathJB =
+	@"/var/jb/var/mobile/Library/Miao/session.txt";
 static NSString *const kAckPath = @"/var/mobile/Documents/miao-ack.txt";
 static NSString *const kLogPath = @"/var/mobile/Documents/miao-loaded.txt";
 /// Safari e' in sandbox e su Documents non scrive: le sue righe finivano nel
@@ -281,7 +286,7 @@ static NSArray<NSString *> *MiaoMoodPaths(void) {
 	return a;
 }
 
-static void MiaoMoodWrite(NSInteger mood) {
+static void MiaoMoodWriteEx(NSInteger mood, NSInteger cycle) {
 	for (NSString *path in MiaoMoodPaths()) {
 		if (mood < 0) {
 			[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
@@ -290,10 +295,16 @@ static void MiaoMoodWrite(NSInteger mood) {
 		NSString *dir = [path stringByDeletingLastPathComponent];
 		[[NSFileManager defaultManager] createDirectoryAtPath:dir
 								  withIntermediateDirectories:YES attributes:nil error:nil];
-		[[NSString stringWithFormat:@"%ld\n%@", (long)mood, MiaoMoodName(mood)]
-			writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		NSString *body = cycle >= 0
+			? [NSString stringWithFormat:@"%ld\n%@\n%ld\n", (long)mood, MiaoMoodName(mood), (long)cycle]
+			: [NSString stringWithFormat:@"%ld\n%@\n", (long)mood, MiaoMoodName(mood)];
+		[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
 		chmod(path.fileSystemRepresentation, 0666);
 	}
+}
+
+static void MiaoMoodWrite(NSInteger mood) {
+	MiaoMoodWriteEx(mood, -1);
 }
 
 static NSInteger MiaoMoodRead(void) {
@@ -316,6 +327,26 @@ static NSInteger MiaoMoodRead(void) {
 	return -1;
 }
 
+/// Terza riga del file mood: indice ciclo fullmix. Il notify `run` arriva
+/// spesso senza il file, e Safari partiva sempre con cycle=-1.
+static NSInteger MiaoMoodReadCycle(void) {
+	for (NSString *path in MiaoMoodPaths()) {
+		NSString *raw = [NSString stringWithContentsOfFile:path
+												 encoding:NSUTF8StringEncoding error:nil];
+		if (!raw.length) continue;
+		NSArray *lines = [raw componentsSeparatedByCharactersInSet:
+			[NSCharacterSet newlineCharacterSet]];
+		if (lines.count < 3) continue;
+		NSString *line = [lines[2] stringByTrimmingCharactersInSet:
+			[NSCharacterSet whitespaceCharacterSet]];
+		if (!line.length) continue;
+		unichar c = [line characterAtIndex:0];
+		if (![[NSCharacterSet decimalDigitCharacterSet] characterIsMember:c]) continue;
+		return [line integerValue];
+	}
+	return -1;
+}
+
 static void MiaoPersonaBegin(void) {
 	uint32_t s = MiaoReportSeed();
 	if (!s) s = arc4random();
@@ -323,6 +354,7 @@ static void MiaoPersonaBegin(void) {
 	if (forced < 0) forced = gForcedMood;
 	if (forced == 11) {
 		gMood = 11;
+		if (gFullCycle < 0) gFullCycle = MiaoMoodReadCycle();
 		uint32_t cyc = (uint32_t)MAX(0, gFullCycle);
 		/* Seed diverso a ogni ciclo: stessi base/spread non si ripetono. */
 		gRng = (s ^ (cyc * 0x85ebca6bu) ^ 0xC2B2AE35u ^ ((cyc + 1u) << 11)) | 1;
@@ -2505,13 +2537,27 @@ static BOOL MiaoLongPressNode(MiaoAXNode *n, NSString *label) {
 	return ok;
 }
 
+/// Start page, preferiti, about:blank: non sono schede da chiudere.
+static BOOL MiaoURLIsRealPage(NSString *u) {
+	if (!u.length) return NO;
+	NSString *l = u.lowercaseString;
+	if ([l hasPrefix:@"about:"]) return NO;
+	if ([l hasPrefix:@"favorites:"]) return NO;
+	if ([l hasPrefix:@"bookmarks:"]) return NO;
+	if ([l hasPrefix:@"file:"]) return NO;
+	if ([l hasPrefix:@"x-web-search:"]) return NO;
+	if ([l containsString:@"startpage"]) return NO;
+	NSURL *url = [NSURL URLWithString:u];
+	NSString *scheme = url.scheme.lowercaseString;
+	return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
+}
+
 /// Pagine con un URL vero caricate in Safari: start page e preview non contano.
 static NSInteger MiaoLoadedPageCount(void) {
 	NSInteger n = 0;
 	for (UIView *v in MiaoAllWebViews()) {
 		NSString *u = MiaoWebViewURL(v);
-		if (!u.length) continue;
-		if ([u.lowercaseString hasPrefix:@"about:"]) continue;
+		if (!MiaoURLIsRealPage(u)) continue;
 		n++;
 	}
 	return n;
@@ -2752,6 +2798,9 @@ static void MiaoActFreshTab(void) {
 		MiaoAfter(MiaoBetween(0.6, 1.1), ^{
 			MiaoToast(@"Scheda nuova");
 			MiaoOpenURL(MiaoHomeURL());
+			/* SB aspetta questo prima di mandare `run`, sennò parte sopra
+			   un closetabs ancora in corso. */
+			MiaoAfter(1.4, ^{ notify_post("com.noxlab.miao.freshdone"); });
 		});
 	});
 }
@@ -4243,14 +4292,31 @@ static void MiaoAdClicks(NSInteger left, void (^done)(void)) {
  */
 static void MiaoLingerOnAd(void (^done)(void)) {
 	NSTimeInterval budget = MiaoAdDwell();
-	/* Fullmix: un tap sul creativo (Relay conta questo), poi 3-5 s e si chiude. */
+	/* Fullmix: tap al centro landing (Relay conta questo, come clickall) e
+	   poi il creativo se il DOM lo trova. Prima solo il JS: se la scheda
+	   non era ancora davanti o il target mancava, Relay vedeva 0 click. */
 	if (MiaoIsFullMix()) {
-		MiaoLog([NSString stringWithFormat:@"ad dwell fullmix=%.1fs + creativo", budget]);
+		MiaoLog([NSString stringWithFormat:@"ad dwell fullmix=%.1fs + landing", budget]);
 		MiaoToast([NSString stringWithFormat:@"Ads… %.0fs", budget]);
-		MiaoTapAdOnFront(^(BOOL ok, NSString *detail) {
-			MiaoStepResult(@"ad-click", ok, detail ?: @"landing");
-			MiaoAfter(budget, ^{ if (done) done(); });
-		});
+		void (^dwell)(void) = ^{ MiaoAfter(budget, ^{ if (done) done(); }); };
+		void (^click)(void) = ^{
+			if (!MiaoForeignFront()) {
+				MiaoStepResult(@"ad-click", NO, @"landing sparita");
+				dwell();
+				return;
+			}
+			BOOL geo = MiaoTapPt(MiaoPtAdCenter(), @"ad-centro");
+			MiaoStepResult(@"ad-click", geo, @"fullmix landing centro");
+			MiaoAfter(MiaoBetween(0.55, 1.2), ^{
+				if (!MiaoForeignFront()) { dwell(); return; }
+				MiaoTapAdOnFront(^(BOOL ok, NSString *detail) {
+					MiaoStepResult(@"ad-click", ok, detail ?: @"creativo");
+					dwell();
+				});
+			});
+		};
+		if (MiaoForeignFront()) click();
+		else MiaoAfter(0.85, click);
 		return;
 	}
 	NSTimeInterval t0 = MiaoBetween(1.4, MIN(3.8, budget * 0.4));
@@ -4790,8 +4856,8 @@ static void MiaoHandle(NSString *cmd) {
 		   spesso non legge miao-mood.txt scritto da SB (sandbox). */
 		NSArray *parts = [cmd componentsSeparatedByCharactersInSet:
 			[NSCharacterSet whitespaceCharacterSet]];
-		gFullCycle = -1;
 		NSInteger foundMood = -1;
+		NSInteger foundCycle = -1;
 		for (NSUInteger i = 1; i < parts.count; i++) {
 			NSString *tok = parts[i];
 			if (!tok.length) continue;
@@ -4800,7 +4866,7 @@ static void MiaoHandle(NSString *cmd) {
 				NSScanner *sc = [NSScanner scannerWithString:tok];
 				NSInteger n = 0;
 				if ([sc scanInteger:&n] && sc.isAtEnd) {
-					gFullCycle = n;
+					foundCycle = n;
 					continue;
 				}
 			}
@@ -4808,9 +4874,12 @@ static void MiaoHandle(NSString *cmd) {
 			if (m >= 0) {
 				foundMood = m;
 				gForcedMood = m;
-				MiaoMoodWrite(m);
 			}
 		}
+		if (foundMood >= 0) MiaoMoodWriteEx(foundMood, foundCycle);
+		if (foundCycle >= 0) gFullCycle = foundCycle;
+		else if (gForcedMood == 11 && gFullCycle < 0)
+			gFullCycle = MiaoMoodReadCycle();
 		MiaoActRun();
 	} else if ([cmd isEqualToString:@"adloop"]) {
 		MiaoActLoop();
@@ -4851,7 +4920,7 @@ static void MiaoConsumeFile(void) {
 void MiaoStartSafari(void) {
 	if (gSafariPollStarted || !MiaoIsSafari()) return;
 	gSafariPollStarted = YES;
-	MiaoLog(@"safari ready 0.14.38 fullmix-click-contati");
+	MiaoLog([NSString stringWithFormat:@"safari ready %@ no-sleep+resume", MIAO_VERSION]);
 	MiaoToast(@"Miao Safari ON");
 
 	for (NSString *n in @[ @"ping", @"clickvideo", @"clickad", @"closeads", @"skipad", @"human",
@@ -4861,9 +4930,29 @@ void MiaoStartSafari(void) {
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
 			(void)t;
-			NSString *raw = [NSString stringWithContentsOfFile:kCmdPath encoding:NSUTF8StringEncoding error:nil];
-			if (raw.length) MiaoConsumeFile();
-			else MiaoHandle(n);
+			/* Il notify `run` parte sul verbo; il file ha `run fullmix N`.
+			   Se il file non e' ancora visibile e si fa Handle("run"),
+			   gFullCycle resta -1 e si perde la rotazione. Si aspetta. */
+			__block NSInteger left = 8;
+			__block void (^tryFile)(void) = nil;
+			tryFile = [^{
+				NSString *raw = [NSString stringWithContentsOfFile:kCmdPath
+														 encoding:NSUTF8StringEncoding error:nil];
+				if (raw.length) {
+					MiaoConsumeFile();
+					return;
+				}
+				if (left-- > 0) {
+					MiaoAfter(0.1, tryFile);
+					return;
+				}
+				if ([n isEqualToString:@"run"]) {
+					MiaoLog(@"run notify senza file, ignoro");
+					return;
+				}
+				MiaoHandle(n);
+			} copy];
+			tryFile();
 		});
 	}
 	[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(__unused NSTimer *tm) {
@@ -4951,6 +5040,38 @@ static void MiaoAwaitTabsDone(NSTimeInterval timeout, void (^done)(BOOL fromSafa
 	});
 }
 
+static void (^gFreshDoneBlock)(void) = nil;
+static BOOL gFreshDoneListening = NO;
+static NSInteger gFreshDoneGen = 0;
+
+static void MiaoFreshDoneListen(void) {
+	if (gFreshDoneListening || !MiaoIsSB()) return;
+	gFreshDoneListening = YES;
+	int token = 0;
+	notify_register_dispatch("com.noxlab.miao.freshdone", &token, dispatch_get_main_queue(), ^(int t) {
+		(void)t;
+		void (^b)(void) = gFreshDoneBlock;
+		gFreshDoneBlock = nil;
+		if (b) b();
+	});
+}
+
+static void MiaoAwaitFreshDone(NSTimeInterval timeout, void (^done)(BOOL fromSafari)) {
+	MiaoFreshDoneListen();
+	NSInteger gen = ++gFreshDoneGen;
+	gFreshDoneBlock = ^{
+		if (gen != gFreshDoneGen) return;
+		gFreshDoneGen++;
+		if (done) done(YES);
+	};
+	MiaoAfter(timeout, ^{
+		if (gen != gFreshDoneGen) return;
+		gFreshDoneGen++;
+		gFreshDoneBlock = nil;
+		if (done) done(NO);
+	});
+}
+
 /// Il ciclo che sta partendo trova Safari appena riaperto: il tweak dentro
 /// Safari deve ancora agganciarsi, quindi i comandi partono piu' tardi.
 static BOOL gColdStart = NO;
@@ -4958,6 +5079,97 @@ static BOOL gColdStart = NO;
 /// schede e aprire una home nuova: prima si saltava freshtab e restava
 /// lo stack di prima.
 static BOOL gNeedFresh = NO;
+
+#pragma mark - Idle + checkpoint maratona
+
+static NSTimer *gIdleKeepalive = nil;
+
+static void MiaoIdlePoke(void) {
+	if (!MiaoIsSB()) return;
+	UIApplication *app = UIApplication.sharedApplication;
+	app.idleTimerDisabled = YES;
+	SEL sel = NSSelectorFromString(@"setIdleTimerDisabled:forReason:");
+	if ([app respondsToSelector:sel])
+		((void (*)(id, SEL, BOOL, id))objc_msgSend)(app, sel, YES, @"com.noxlab.miao");
+	SEL reset = NSSelectorFromString(@"resetIdleTimerAndUndim");
+	if ([app respondsToSelector:reset])
+		((void (*)(id, SEL))objc_msgSend)(app, reset);
+}
+
+/// Tiene il telefono sveglio: i `dispatch_after` di SpringBoard non partono
+/// se iOS va in idle, e la maratona si pianta a meta' (ciclo 322, silenzio).
+static void MiaoIdleHold(BOOL on) {
+	if (!MiaoIsSB()) return;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		UIApplication *app = UIApplication.sharedApplication;
+		if (on) {
+			MiaoIdlePoke();
+			if (!gIdleKeepalive) {
+				gIdleKeepalive = [NSTimer timerWithTimeInterval:25.0 repeats:YES
+														  block:^(__unused NSTimer *t) {
+					MiaoIdlePoke();
+				}];
+				[[NSRunLoop mainRunLoop] addTimer:gIdleKeepalive forMode:NSRunLoopCommonModes];
+			}
+			return;
+		}
+		[gIdleKeepalive invalidate];
+		gIdleKeepalive = nil;
+		app.idleTimerDisabled = NO;
+		SEL sel = NSSelectorFromString(@"setIdleTimerDisabled:forReason:");
+		if ([app respondsToSelector:sel])
+			((void (*)(id, SEL, BOOL, id))objc_msgSend)(app, sel, NO, @"com.noxlab.miao");
+	});
+}
+
+static NSArray<NSString *> *MiaoSessionPaths(void) {
+	NSMutableArray *a = [NSMutableArray arrayWithObject:kSessionPath];
+	if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"])
+		[a addObject:kSessionPathJB];
+	return a;
+}
+
+static void MiaoSessionSave(NSInteger idx, NSInteger total, NSInteger mood) {
+	NSString *body = [NSString stringWithFormat:@"%@\n%ld\n%ld\n%ld\n",
+		MIAO_VERSION, (long)idx, (long)total, (long)mood];
+	for (NSString *path in MiaoSessionPaths()) {
+		NSString *dir = [path stringByDeletingLastPathComponent];
+		[[NSFileManager defaultManager] createDirectoryAtPath:dir
+								  withIntermediateDirectories:YES attributes:nil error:nil];
+		[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		chmod(path.fileSystemRepresentation, 0666);
+	}
+}
+
+static void MiaoSessionClear(void) {
+	for (NSString *path in MiaoSessionPaths())
+		[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+}
+
+static BOOL MiaoSessionLoad(NSInteger *idx, NSInteger *total, NSInteger *mood) {
+	for (NSString *path in MiaoSessionPaths()) {
+		NSString *raw = [NSString stringWithContentsOfFile:path
+												 encoding:NSUTF8StringEncoding error:nil];
+		if (!raw.length) continue;
+		NSMutableArray *lines = [NSMutableArray array];
+		for (NSString *l in [raw componentsSeparatedByCharactersInSet:
+			[NSCharacterSet newlineCharacterSet]]) {
+			NSString *t = [l stringByTrimmingCharactersInSet:
+				[NSCharacterSet whitespaceCharacterSet]];
+			if (t.length) [lines addObject:t];
+		}
+		if (lines.count < 4) continue;
+		NSInteger i = [lines[1] integerValue];
+		NSInteger n = [lines[2] integerValue];
+		NSInteger m = [lines[3] integerValue];
+		if (i < 0 || n < 1 || n > 700 || i >= n) continue;
+		if (idx) *idx = i;
+		if (total) *total = n;
+		if (mood) *mood = m;
+		return YES;
+	}
+	return NO;
+}
 
 /**
  Chiude una sessione e prepara la prossima da uno stato pulito.
@@ -5018,6 +5230,7 @@ static void MiaoCycleReset(NSInteger idx, NSInteger total, void (^done)(void)) {
 static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	MiaoToast([NSString stringWithFormat:@"%@/%@ sessione...", @(idx + 1), @(total)]);
 	MiaoLog([NSString stringWithFormat:@"cycle %ld", (long)idx]);
+	MiaoSessionSave(idx, total, gForcedMood);
 
 	/* Apri Safari, non la home ogni volta: openURL crea una scheda nuova
 	   e lascia lo stack sporco (stessi cookie, N tab). Il run riusa la
@@ -5033,29 +5246,18 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 	gNeedFresh = NO;
 	MiaoAfter(cold ? 5.0 : 2.2, ^{ MiaoSendCmd(@"ping"); });
 
-	/* Dopo il kill, Safari puo' comunque ripristinare una scheda (o la start
-	   page). Si ripulisce di nuovo e si apre la home prima del run. Anche se
-	   il kill e' fallito, freshtab chiude le schede rimaste. */
-	if (fresh) MiaoAfter(cold ? 8.5 : 3.5, ^{ MiaoSendCmd(@"freshtab"); });
-
 	/* La calibrazione installa una sonda sulla pagina: si fa una volta sola e il
 	   risultato resta su disco. Se c'e' gia', non la rifacciamo. */
 	BOOL calibrated = [[NSFileManager defaultManager] fileExistsAtPath:kCalPath];
-	NSTimeInterval runAt = cold ? 22.0 : (fresh ? 10.0 : 4.5);
-	if (idx == 0 && !calibrated) {
+	if (idx == 0 && !calibrated)
 		MiaoAfter(3.8, ^{ MiaoSendCmd(@"calib"); });
-		// la calibrazione ora aspetta il DOM prima di misurare: diamole spazio
-		runAt = 22.0;
-	}
 
-	/* Un solo passaggio, autonomo dentro Safari: scroll, click video, chiusura
-	   ads, ri-click, attesa dello skip, skip. SpringBoard non scandisce i passi,
-	   aspetta solo il verdetto. */
-	MiaoAfter(runAt, ^{
+	void (^sendRun)(void) = ^{
 		MiaoToast(@"Run...");
 		/* Passa il mood nel comando: unico canale affidabile verso Safari. */
 		NSString *runCmd = @"run";
 		if (gForcedMood == 11) {
+			MiaoMoodWriteEx(11, idx);
 			runCmd = [NSString stringWithFormat:@"run fullmix %ld", (long)idx];
 			MiaoLog([NSString stringWithFormat:@"fullmix cycle %ld", (long)idx]);
 		} else if (gForcedMood == 10) {
@@ -5071,9 +5273,6 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 		/* Il passo successivo parte quando il run ha finito, non a un orario
 		   deciso prima: con i tempi fissi mandavamo `human` e `closeextra` su un
 		   run ancora in corso, e il ciclo dopo partiva su uno stato sporco. */
-		/* Con le visioni accorciate un run sano finisce sotto i tre minuti, anche
-		   con due video e qualche recupero: 520 s erano nove minuti buttati ogni
-		   volta che un run si impiantava. */
 		MiaoAwaitRunEnd(300.0, ^(BOOL fromSafari) {
 			MiaoLog(fromSafari ? @"cycle: run concluso" : @"cycle: timeout attesa run");
 			if (!fromSafari) MiaoToast(@"Run: timeout");
@@ -5083,7 +5282,25 @@ static void MiaoRunCycle(NSInteger idx, NSInteger total, void (^done)(void)) {
 			   il gesto era ancora in corso e Safari ripristinava lo stack. */
 			MiaoAfter(0.8, ^{ MiaoCycleReset(idx, total, done); });
 		});
-	});
+	};
+
+	/* Dopo il kill, Safari puo' comunque ripristinare una scheda (o la start
+	   page). Si ripulisce e si apre la home, POI si manda run: prima i due
+	   timer partivano in parallelo e `run` cascava su closetabs ancora vivo. */
+	if (fresh) {
+		MiaoAfter(cold ? 8.5 : 3.5, ^{
+			MiaoSendCmd(@"freshtab");
+			MiaoAwaitFreshDone(28.0, ^(BOOL fromSafari) {
+				MiaoLog(fromSafari ? @"cycle: freshtab ok" : @"cycle: freshtab scaduto");
+				MiaoAfter(1.0, sendRun);
+			});
+		});
+		return;
+	}
+
+	NSTimeInterval runAt = cold ? 12.0 : 4.5;
+	if (idx == 0 && !calibrated) runAt = 22.0;
+	MiaoAfter(runAt, sendRun);
 }
 
 /// Generazione della sessione: `stop` la incrementa e i passi ancora in coda,
@@ -5099,6 +5316,8 @@ static void MiaoStep(NSInteger i, NSInteger n, NSInteger gen) {
 	}
 	if (i >= n) {
 		gSessionBusy = NO;
+		MiaoIdleHold(NO);
+		MiaoSessionClear();
 		MiaoToast(@"Fine sessione");
 		MiaoLog(@"session end");
 		return;
@@ -5118,11 +5337,15 @@ static void MiaoSessionStop(void) {
 	gRunEndBlock = nil;
 	gTabsDoneGen++;
 	gTabsDoneBlock = nil;
+	gFreshDoneGen++;
+	gFreshDoneBlock = nil;
 	gAirplaneGen++;
 	/* Se lo stop arriva a meta' blink, non lasciare Aereo acceso ne' Wi‑Fi
 	   riacceso dal ripristino iOS. */
 	MiaoSetAirplane(NO);
 	MiaoForceWiFiOff();
+	MiaoIdleHold(NO);
+	MiaoSessionClear();
 	gSessionBusy = NO;
 	MiaoLog(@"session stop");
 	MiaoToast(@"Sessione fermata");
@@ -5136,11 +5359,12 @@ static void MiaoSessionRun(NSInteger cycles) {
 		return;
 	}
 	gSessionBusy = YES;
+	MiaoIdleHold(YES);
 	NSInteger n = cycles > 0 ? MIN(cycles, 700) : MiaoCycles();
 	MiaoReportEnsure();
 	[@"" writeToFile:kLogPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-	MiaoLog([NSString stringWithFormat:@"session 0.14.38 x%ld mood=%ld",
-		(long)n, (long)gForcedMood]);
+	MiaoLog([NSString stringWithFormat:@"session %@ x%ld mood=%ld",
+		MIAO_VERSION, (long)n, (long)gForcedMood]);
 	MiaoToast([NSString stringWithFormat:@"Sessione x%ld %@...",
 		(long)n, gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
 	/* Traccia batch da SpringBoard: cosi' il pannello vede qualcosa anche se
@@ -5150,6 +5374,7 @@ static void MiaoSessionRun(NSInteger cycles) {
 		[NSString stringWithFormat:@"x%ld mood=%@", (long)n,
 			gForcedMood >= 0 ? MiaoMoodName(gForcedMood) : @"auto"]);
 	MiaoReportEnd(YES, [NSString stringWithFormat:@"avviato x%ld", (long)n]);
+	MiaoSessionSave(0, n, gForcedMood);
 	MiaoStep(0, n, ++gSessionGen);
 }
 
@@ -5248,7 +5473,22 @@ void MiaoBoot(void) {
 	if (MiaoIsSB()) {
 		MiaoReportEnsure();
 		MiaoStartSBCommands();
-		MiaoToast(@"Miao 0.14.38 - app o 3x Vol");
+		NSInteger idx = 0, total = 0, mood = -1;
+		if (!gSessionBusy && MiaoSessionLoad(&idx, &total, &mood)) {
+			MiaoLog([NSString stringWithFormat:
+				@"session: riprendo idx=%ld/%ld mood=%ld dopo restart SB",
+				(long)idx, (long)total, (long)mood]);
+			gForcedMood = mood;
+			if (mood >= 0) MiaoMoodWriteEx(mood, idx);
+			gSessionBusy = YES;
+			gColdStart = YES;
+			gNeedFresh = YES;
+			MiaoIdleHold(YES);
+			MiaoToast([NSString stringWithFormat:@"Riprendo %@/%@", @(idx + 1), @(total)]);
+			MiaoAfter(5.0, ^{ MiaoStep(idx, total, ++gSessionGen); });
+		} else {
+			MiaoToast([NSString stringWithFormat:@"Miao %@ - app o 3x Vol", MIAO_VERSION]);
+		}
 	} else if (MiaoIsSafari()) {
 		MiaoReportEnsure();
 		MiaoStartSafari();
