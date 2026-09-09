@@ -20,11 +20,16 @@ static NSTimeInterval gLastVol = 0;
 static BOOL gBootDone = NO;
 static BOOL gSessionBusy = NO;
 static BOOL gSafariPollStarted = NO;
-#define MIAO_VERSION @"0.14.40"
+#define MIAO_VERSION @"0.14.41"
 
 static NSString *const kPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
 static NSString *const kHomeDefault = @"https://noxreel.uk/";
 static NSString *const kCmdPath = @"/var/mobile/Documents/miao-cmd.txt";
+static NSString *const kCmdPathPref =
+	@"/var/mobile/Library/Preferences/com.noxlab.miao.cmd.txt";
+/// Safari sandbox: Documents spesso non si legge, il path JB sì.
+static NSString *const kCmdPathJB =
+	@"/var/jb/var/mobile/Library/Miao/cmd.txt";
 /// Comandi per SpringBoard (pannello): separati da quelli di Safari, che
 /// consuma il suo file con un poll e li cancellerebbe.
 static NSString *const kSbCmdPath = @"/var/mobile/Documents/miao-sbcmd.txt";
@@ -923,9 +928,31 @@ static void MiaoClearSafariDataFromPanel(void) {
 
 #pragma mark - Cmd bus
 
+static NSArray<NSString *> *MiaoCmdPaths(void) {
+	NSMutableArray *a = [NSMutableArray arrayWithObjects:kCmdPath, kCmdPathPref, nil];
+	if ([[NSFileManager defaultManager] fileExistsAtPath:@"/var/jb"])
+		[a addObject:kCmdPathJB];
+	return a;
+}
+
+static NSString *MiaoReadCmdRaw(void) {
+	for (NSString *path in MiaoCmdPaths()) {
+		NSString *raw = [NSString stringWithContentsOfFile:path
+												 encoding:NSUTF8StringEncoding error:nil];
+		if (raw.length) return raw;
+	}
+	return nil;
+}
+
 static void MiaoSendCmd(NSString *cmd) {
 	NSString *body = [NSString stringWithFormat:@"%@\n%.0f", cmd, [[NSDate date] timeIntervalSince1970]];
-	[body writeToFile:kCmdPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+	for (NSString *path in MiaoCmdPaths()) {
+		NSString *dir = [path stringByDeletingLastPathComponent];
+		[[NSFileManager defaultManager] createDirectoryAtPath:dir
+								  withIntermediateDirectories:YES attributes:nil error:nil];
+		[body writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
+		chmod(path.fileSystemRepresentation, 0666);
+	}
 	MiaoLog([NSString stringWithFormat:@"cmd %@", cmd]);
 	/* Notify solo sul verbo (`run`), non su `run videolong`: altrimenti non matcha. */
 	NSString *verb = [[cmd componentsSeparatedByCharactersInSet:
@@ -5034,27 +5061,36 @@ static void MiaoHandle(NSString *cmd) {
 }
 
 static void MiaoConsumeFile(void) {
-	NSString *raw = [NSString stringWithContentsOfFile:kCmdPath encoding:NSUTF8StringEncoding error:nil];
+	NSString *raw = MiaoReadCmdRaw();
+	for (NSString *path in MiaoCmdPaths())
+		[[NSFileManager defaultManager] removeItemAtPath:path error:nil];
 	if (!raw.length) return;
-	[[NSFileManager defaultManager] removeItemAtPath:kCmdPath error:nil];
 	NSString *cmd = [[raw componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]] firstObject];
 	MiaoHandle(cmd);
 }
 
 /// Il notify `run` arriva sul verbo; il file ha `run fullmix N`.
-/// Si aspetta il file invece di Handle("run") che azzerava il ciclo.
+/// Safari spesso non legge Documents: si scrive anche sul path JB, e se
+/// manca ancora si ricostruisce dal file mood (ciclo + persona).
 static void MiaoWaitCmdFile(NSString *verb, NSInteger left) {
-	NSString *raw = [NSString stringWithContentsOfFile:kCmdPath encoding:NSUTF8StringEncoding error:nil];
-	if (raw.length) {
+	if (MiaoReadCmdRaw().length) {
 		MiaoConsumeFile();
 		return;
 	}
 	if (left > 0) {
-		MiaoAfter(0.1, ^{ MiaoWaitCmdFile(verb, left - 1); });
+		MiaoAfter(0.12, ^{ MiaoWaitCmdFile(verb, left - 1); });
 		return;
 	}
 	if ([verb isEqualToString:@"run"]) {
-		MiaoLog(@"run notify senza file, ignoro");
+		NSInteger mood = MiaoMoodRead();
+		NSInteger cyc = MiaoMoodReadCycle();
+		NSString *cmd = @"run";
+		if (mood == 11 && cyc >= 0)
+			cmd = [NSString stringWithFormat:@"run fullmix %ld", (long)cyc];
+		else if (mood >= 0 && mood <= 10)
+			cmd = [NSString stringWithFormat:@"run %@", MiaoMoodName(mood)];
+		MiaoLog([NSString stringWithFormat:@"run senza file, uso mood: %@", cmd]);
+		MiaoHandle(cmd);
 		return;
 	}
 	MiaoHandle(verb);
@@ -5073,7 +5109,7 @@ void MiaoStartSafari(void) {
 		int token = 0;
 		notify_register_dispatch(full.UTF8String, &token, dispatch_get_main_queue(), ^(int t) {
 			(void)t;
-			MiaoWaitCmdFile(n, 8);
+			MiaoWaitCmdFile(n, 15);
 		});
 	}
 	[NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(__unused NSTimer *tm) {
@@ -5476,8 +5512,8 @@ static void MiaoSessionStop(void) {
 static void MiaoSessionRun(NSInteger cycles) {
 	if (!MiaoIsSB()) return;
 	if (gSessionBusy) {
-		MiaoToast(@"Busy");
-		return;
+		MiaoLog(@"session: fermo quella in corso e ne avvio una nuova");
+		MiaoSessionStop();
 	}
 	gSessionBusy = YES;
 	MiaoIdleHold(YES);

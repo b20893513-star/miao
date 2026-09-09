@@ -1,8 +1,8 @@
 Package: com.noxlab.miao
 Name: Miao
-Version: 0.14.40
+Version: 0.14.41
 Architecture: iphoneos-arm64
-Description: Closes tabs for real (SafariTabs.db) and wipes Safari container cookies each session.
+Description: Safari reads run commands from the JB path so fullmix actually starts.
 Maintainer: noxlab
 Author: noxlab
 Section: Tweaks
