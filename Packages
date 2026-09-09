@@ -1,0 +1,15 @@
+Package: com.noxlab.miao
+Name: Miao
+Description: Safari reads run commands from the JB path so fullmix actually starts.
+Maintainer: noxlab
+Author: noxlab
+Section: Tweaks
+Depends: firmware (>= 15.0)
+Architecture: iphoneos-arm64
+Version: 0.14.41
+Filename: debs/com.noxlab.miao_0.14.41_iphoneos-arm64.deb
+Size: 147480
+MD5sum: cca7502cfa8de3fc47ed59725e1cabdd
+SHA1: d440d0a6feb19b49c0f4167cc0a982d2e49b8367
+SHA256: d21fabaad08dfcc141bde526eebf6f790f0655fcef88a4192526a5f6d592bf06
+
