@@ -20,7 +20,7 @@ static NSTimeInterval gLastVol = 0;
 static BOOL gBootDone = NO;
 static BOOL gSessionBusy = NO;
 static BOOL gSafariPollStarted = NO;
-#define MIAO_VERSION @"0.14.39"
+#define MIAO_VERSION @"0.14.40"
 
 static NSString *const kPrefPath = @"/var/mobile/Library/Preferences/com.noxlab.miao.plist";
 static NSString *const kHomeDefault = @"https://noxreel.uk/";
@@ -501,6 +501,7 @@ static BOOL MiaoKillSafari(void) {
 	MiaoTerminateBundle(@"com.apple.WebKit.Networking");
 	MiaoTerminateBundle(@"com.apple.WebKit.WebContent");
 	MiaoTerminateBundle(@"com.apple.SafariViewService");
+	MiaoTerminateBundle(@"com.apple.WebKit.GPU");
 	if (!ok) MiaoLog(@"Safari non chiuso: nessuna via disponibile");
 	return ok;
 }
@@ -588,26 +589,154 @@ static BOOL MiaoPathExists(NSString *path) {
 }
 
 /**
+ Cartella dati di Safari (UUID del container). Su iOS 16 cookie, HTTPStorages
+ e WebsiteData stanno qui, non in /var/mobile/Library/Cookies.
+ */
+static NSString *MiaoSafariContainerPath(void) {
+	Class c = NSClassFromString(@"LSApplicationProxy");
+	SEL sel = NSSelectorFromString(@"applicationProxyForIdentifier:");
+	if (c && [c respondsToSelector:sel]) {
+		id proxy = nil;
+		@try {
+			proxy = ((id (*)(id, SEL, id))objc_msgSend)(c, sel, @"com.apple.mobilesafari");
+		} @catch (NSException *ex) { (void)ex; }
+		if (proxy) {
+			id url = nil;
+			@try { url = [proxy valueForKey:@"dataContainerURL"]; }
+			@catch (NSException *ex) { (void)ex; }
+			if ([url isKindOfClass:[NSURL class]] && [(NSURL *)url path].length)
+				return [(NSURL *)url path];
+			if ([url isKindOfClass:[NSString class]] && [(NSString *)url length])
+				return (NSString *)url;
+		}
+	}
+	NSString *root = @"/var/mobile/Containers/Data/Application";
+	for (NSString *uuid in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:root error:nil]) {
+		NSString *meta = [[root stringByAppendingPathComponent:uuid]
+			stringByAppendingPathComponent:@".com.apple.mobile_container_manager.metadata.plist"];
+		NSDictionary *pl = [NSDictionary dictionaryWithContentsOfFile:meta];
+		NSString *ident = [pl[@"MCMMetadataIdentifier"] description];
+		if ([ident isEqualToString:@"com.apple.mobilesafari"])
+			return [root stringByAppendingPathComponent:uuid];
+	}
+	return nil;
+}
+
+static NSArray<NSString *> *MiaoSiteDataProbePaths(void) {
+	NSMutableArray *a = [NSMutableArray arrayWithObjects:
+		@"/var/mobile/Library/Cookies/Cookies.binarycookies",
+		@"/var/mobile/Library/Safari/SafariTabs.db",
+		@"/var/mobile/Library/Safari/History.db",
+		@"/var/mobile/Library/Safari/CloudTabs.db",
+		nil];
+	NSString *home = MiaoSafariContainerPath();
+	if (home.length) {
+		[a addObject:[home stringByAppendingPathComponent:@"Library/Cookies/Cookies.binarycookies"]];
+		[a addObject:[home stringByAppendingPathComponent:@"Library/HTTPStorages/com.apple.mobilesafari/httpstorages.sqlite"]];
+		[a addObject:[home stringByAppendingPathComponent:@"Library/WebKit/WebsiteData/ResourceLoadStatistics/observations.db"]];
+		[a addObject:[home stringByAppendingPathComponent:@"Library/WebKit/WebsiteData/LocalStorage"]];
+		[a addObject:[home stringByAppendingPathComponent:@"Library/Caches/WebKit/NetworkCache"]];
+	}
+	return a;
+}
+
+/**
  Tracce che Impostazioni toglie e che fanno sopravvivere eta'/cap.
 
  Se uno di questi c'e' ancora, il wipe non e' riuscito.
  */
 static BOOL MiaoSiteDataStillPresent(void) {
-	NSArray *probe = @[
-		@"/var/mobile/Library/Cookies/Cookies.binarycookies",
-		@"/var/mobile/Library/WebKit/WebsiteData",
-		@"/var/mobile/Library/HTTPStorages/com.apple.mobilesafari",
-		@"/var/mobile/Library/HTTPStorages/com.apple.WebKit.Networking",
-		@"/var/mobile/Library/Safari/LocalStorage",
-		@"/var/mobile/Library/Safari/SafariResourceLoadStatistics",
-	];
-	for (NSString *p in probe) {
-		if (MiaoPathExists(p)) {
-			MiaoLog([NSString stringWithFormat:@"cleardata: resta %@", p]);
-			return YES;
+	for (NSString *p in MiaoSiteDataProbePaths()) {
+		if (!MiaoPathExists(p)) continue;
+		BOOL dir = NO;
+		[[NSFileManager defaultManager] fileExistsAtPath:p isDirectory:&dir];
+		if (dir) {
+			NSArray *kids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:p error:nil];
+			if (kids.count == 0) continue;
 		}
+		MiaoLog([NSString stringWithFormat:@"cleardata: resta %@", p]);
+		return YES;
 	}
 	return NO;
+}
+
+static NSInteger MiaoWipeSafariDir(NSString *dir, BOOL container) {
+	if (!dir.length) return 0;
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSInteger n = 0;
+	NSMutableArray *exact = [NSMutableArray arrayWithObjects:
+		@"Library/Cookies",
+		@"Library/Caches/WebKit",
+		@"Library/Caches/com.apple.mobilesafari",
+		@"Library/Caches/com.apple.WebKit",
+		@"Library/Caches/com.apple.WebKit.Networking",
+		@"Library/Caches/com.apple.WebKit.WebContent",
+		@"Library/Caches/com.apple.WebKit.GPU",
+		@"Library/Caches/com.apple.Safari",
+		@"Library/Caches/com.apple.SafariViewService",
+		@"Library/Safari/Thumbnails",
+		@"Library/Safari/History.db",
+		@"Library/Safari/History.db-shm",
+		@"Library/Safari/History.db-wal",
+		@"Library/Safari/BrowserState.db",
+		@"Library/Safari/BrowserState.db-shm",
+		@"Library/Safari/BrowserState.db-wal",
+		@"Library/Safari/SafariTabs.db",
+		@"Library/Safari/SafariTabs.db-shm",
+		@"Library/Safari/SafariTabs.db-wal",
+		@"Library/Safari/CloudTabs.db",
+		@"Library/Safari/CloudTabs.db-shm",
+		@"Library/Safari/CloudTabs.db-wal",
+		@"Library/Safari/RecentlyClosedTabs.plist",
+		@"Library/Safari/LastSession.plist",
+		@"Library/Safari/SuspendState.plist",
+		@"Library/Safari/LocalStorage",
+		@"Library/Safari/Databases",
+		@"Library/Safari/SafariResourceLoadStatistics",
+		@"Library/Safari/Cookies.binarycookies",
+		nil];
+	/* Nel container Safari possiamo togliere WebKit e HTTPStorages interi.
+	   Su /var/mobile no: li usano anche altre app. */
+	if (container) {
+		[exact addObject:@"Library/WebKit"];
+		[exact addObject:@"Library/HTTPStorages"];
+	} else {
+		[exact addObject:@"Library/WebKit/WebsiteData"];
+		[exact addObject:@"Library/HTTPStorages/com.apple.mobilesafari"];
+		[exact addObject:@"Library/HTTPStorages/com.apple.WebKit.Networking"];
+		[exact addObject:@"Library/HTTPStorages/com.apple.WebKit.WebContent"];
+	}
+	for (NSString *rel in exact)
+		n += MiaoRemovePathTree([dir stringByAppendingPathComponent:rel]);
+
+	void (^scan)(NSString *, BOOL (^)(NSString *)) = ^(NSString *sub, BOOL (^want)(NSString *low)) {
+		NSString *path = [dir stringByAppendingPathComponent:sub];
+		NSArray *kids = [fm contentsOfDirectoryAtPath:path error:nil];
+		for (NSString *name in kids) {
+			if (want(name.lowercaseString))
+				n += MiaoRemovePathTree([path stringByAppendingPathComponent:name]);
+		}
+	};
+	scan(@"Library/Safari", ^BOOL(NSString *low) {
+		return [low hasPrefix:@"history"] || [low hasPrefix:@"browserstate"] ||
+			[low hasPrefix:@"safaritabs"] || [low hasPrefix:@"cloudtabs"] ||
+			[low hasPrefix:@"topsites"] || [low hasPrefix:@"search"] ||
+			[low hasPrefix:@"recently"] || [low hasPrefix:@"lastsession"] ||
+			[low hasPrefix:@"suspend"] || [low containsString:@"cookie"] ||
+			[low containsString:@"localstorage"] || [low containsString:@"website"] ||
+			[low containsString:@"resource"] || [low containsString:@"storage"] ||
+			[low containsString:@"webkit"] || [low hasPrefix:@"thumbnail"];
+	});
+	if (!container) {
+		scan(@"Library/HTTPStorages", ^BOOL(NSString *low) {
+			return [low containsString:@"safari"] || [low containsString:@"webkit"] ||
+				[low containsString:@"mobilesafari"];
+		});
+	}
+	scan(@"Library/Caches", ^BOOL(NSString *low) {
+		return [low containsString:@"safari"] || [low containsString:@"webkit"];
+	});
+	return n;
 }
 
 /**
@@ -615,71 +744,28 @@ static BOOL MiaoSiteDataStillPresent(void) {
 
  Va fatto a Safari e WebKit morti. Non e' WKWebsiteDataStore: da SpringBoard
  quello store non e' raggiungibile, i file si.
+
+ Su iOS 16 le schede aperte stanno in SafariTabs.db (non BrowserState.db) e
+ cookie/localStorage nel container dell'app, non in Library/Cookies globale.
  */
 static NSInteger MiaoClearSafariBrowsingData(void) {
 	NSFileManager *fm = [NSFileManager defaultManager];
-	__block NSInteger n = 0;
+	NSInteger n = 0;
 
 	n += MiaoRemovePathTree(@"/var/mobile/Library/Cookies");
 	[fm createDirectoryAtPath:@"/var/mobile/Library/Cookies"
   withIntermediateDirectories:YES attributes:nil error:nil];
 
-	NSArray *exact = @[
-		@"/var/mobile/Library/Safari/History.db",
-		@"/var/mobile/Library/Safari/History.db-shm",
-		@"/var/mobile/Library/Safari/History.db-wal",
-		@"/var/mobile/Library/Safari/BrowserState.db",
-		@"/var/mobile/Library/Safari/BrowserState.db-shm",
-		@"/var/mobile/Library/Safari/BrowserState.db-wal",
-		@"/var/mobile/Library/Safari/CloudTabs.db",
-		@"/var/mobile/Library/Safari/CloudTabs.db-shm",
-		@"/var/mobile/Library/Safari/CloudTabs.db-wal",
-		@"/var/mobile/Library/Safari/RecentlyClosedTabs.plist",
-		@"/var/mobile/Library/Safari/LastSession.plist",
-		@"/var/mobile/Library/Safari/SuspendState.plist",
-		@"/var/mobile/Library/Safari/AutoFillCorrections.db",
-		@"/var/mobile/Library/Safari/PerSitePreferences.db",
-		@"/var/mobile/Library/Safari/PerSitePreferences.db-shm",
-		@"/var/mobile/Library/Safari/PerSitePreferences.db-wal",
-		@"/var/mobile/Library/Safari/LocalStorage",
-		@"/var/mobile/Library/Safari/Databases",
-		@"/var/mobile/Library/Safari/SafariResourceLoadStatistics",
-		@"/var/mobile/Library/Safari/Cookies.binarycookies",
-		@"/var/mobile/Library/HTTPStorages/com.apple.mobilesafari",
-		@"/var/mobile/Library/HTTPStorages/com.apple.WebKit.Networking",
-		@"/var/mobile/Library/HTTPStorages/com.apple.WebKit.WebContent",
-		@"/var/mobile/Library/WebKit/WebsiteData",
-		@"/var/mobile/Library/Caches/com.apple.mobilesafari",
-		@"/var/mobile/Library/Caches/com.apple.WebKit",
-		@"/var/mobile/Library/Caches/com.apple.WebKit.Networking",
-		@"/var/mobile/Library/Caches/com.apple.WebKit.WebContent",
-		@"/var/mobile/Library/Caches/WebKit",
-		@"/var/mobile/Library/Caches/com.apple.Safari",
-	];
-	for (NSString *p in exact) n += MiaoRemovePathTree(p);
-
-	void (^scan)(NSString *, BOOL (^)(NSString *)) = ^(NSString *dir, BOOL (^want)(NSString *low)) {
-		NSArray *kids = [fm contentsOfDirectoryAtPath:dir error:nil];
-		for (NSString *name in kids) {
-			if (want(name.lowercaseString))
-				n += MiaoRemovePathTree([dir stringByAppendingPathComponent:name]);
-		}
-	};
-	scan(@"/var/mobile/Library/Safari", ^BOOL(NSString *low) {
-		return [low hasPrefix:@"history"] || [low hasPrefix:@"browserstate"] ||
-			[low hasPrefix:@"cloudtabs"] || [low hasPrefix:@"topsites"] ||
-			[low hasPrefix:@"search"] || [low hasPrefix:@"recently"] ||
-			[low hasPrefix:@"lastsession"] || [low hasPrefix:@"suspend"] ||
-			[low containsString:@"cookie"] || [low containsString:@"localstorage"] ||
-			[low containsString:@"website"] || [low containsString:@"resource"] ||
-			[low containsString:@"storage"] || [low containsString:@"webkit"];
-	});
-	scan(@"/var/mobile/Library/HTTPStorages", ^BOOL(NSString *low) {
-		return [low containsString:@"safari"] || [low containsString:@"webkit"];
-	});
-	scan(@"/var/mobile/Library/Caches", ^BOOL(NSString *low) {
-		return [low containsString:@"safari"] || [low containsString:@"webkit"];
-	});
+	n += MiaoWipeSafariDir(@"/var/mobile", NO);
+	NSString *home = MiaoSafariContainerPath();
+	if (home.length) {
+		MiaoLog([NSString stringWithFormat:@"cleardata: container %@", home]);
+		n += MiaoWipeSafariDir(home, YES);
+		[fm createDirectoryAtPath:[home stringByAppendingPathComponent:@"Library/Cookies"]
+	  withIntermediateDirectories:YES attributes:nil error:nil];
+	} else {
+		MiaoLog(@"cleardata: container Safari non trovato");
+	}
 
 	MiaoLog([NSString stringWithFormat:@"cleardata: rimossi %ld elementi resta=%d",
 		(long)n, MiaoSiteDataStillPresent() ? 1 : 0]);
@@ -2240,6 +2326,31 @@ static NSArray *MiaoTabList(id bc) {
 	return @[];
 }
 
+static BOOL MiaoCloseAllTabsAPI(void) {
+	id bc = MiaoBrowser();
+	id tc = nil;
+	@try { tc = [bc valueForKey:@"tabController"]; } @catch (NSException *ex) { (void)ex; }
+	NSMutableArray *targets = [NSMutableArray array];
+	if (tc) [targets addObject:tc];
+	if (bc) [targets addObject:bc];
+	for (id t in targets) {
+		for (NSString *m in @[ @"closeAllTabs", @"closeAllOpenTabs",
+							   @"closeAllTabDocumentsAnimated:", @"closeAllTabsAnimated:" ]) {
+			SEL sel = NSSelectorFromString(m);
+			if (![t respondsToSelector:sel]) continue;
+			@try {
+				if ([m containsString:@"Animated"])
+					((void (*)(id, SEL, BOOL))objc_msgSend)(t, sel, NO);
+				else
+					((void (*)(id, SEL))objc_msgSend)(t, sel);
+				MiaoLog([NSString stringWithFormat:@"closetabs: closeAll via %@", m]);
+				return YES;
+			} @catch (NSException *ex) { (void)ex; }
+		}
+	}
+	return NO;
+}
+
 static BOOL MiaoCloseTab(id bc, id tab) {
 	for (NSString *m in @[ @"closeTabDocument:animated:", @"closeTab:" ]) {
 		SEL sel = NSSelectorFromString(m);
@@ -2478,18 +2589,16 @@ static NSInteger MiaoBigCardCount(void) {
 /**
  Siamo nella panoramica schede ("Mostra pannelli"), non sulla pagina.
 
- Non basta "c'e' una webview": dopo Schede→X resta una miniatura grande del
- sito, FrontWebView diventa non-nil e il run scrollava i pannelli.
- Fine da solo non basta: il player nativo iOS ha lo stesso pulsante.
+ Con una sola scheda la miniatura copre quasi tutto lo schermo: prima
+ `Fine && !full` falliva e si credeva di non essere in griglia. Il player
+ nativo ha Fine, ma MiaoInNativeVideoFS lo scarta.
  */
 static BOOL MiaoInTabOverview(void) {
 	if (MiaoInNativeVideoFS()) return NO;
-	BOOL fine = MiaoAXFind(MiaoNamesDone()) != nil;
+	if (MiaoAXFind(MiaoNamesDone()) != nil) return YES;
 	BOOL full = MiaoHasFullPageWebView();
 	NSInteger cards = MiaoBigCardCount();
-	if (fine && !full) return YES;
 	if (!full && cards >= 2) return YES;
-	if (fine && cards >= 2) return YES;
 	return NO;
 }
 
@@ -2585,9 +2694,11 @@ static NSArray<MiaoAXNode *> *MiaoTabCards(void) {
 	NSMutableArray *cards = [NSMutableArray array];
 	for (MiaoAXNode *n in MiaoAXNodes()) {
 		CGFloat w = n.frame.size.width, h = n.frame.size.height;
-		if (w < 100 || h < 120) continue;
-		if ((w * h) / full > 0.7) continue;
-		if (!n.label.length) continue;
+		if (w < 90 || h < 100) continue;
+		/* Una sola scheda: la preview e' enorme. 0.7 la scartava come
+		   contenitore e closetabs vedeva 0 card con la pagina ancora li'. */
+		if ((w * h) / full > 0.94) continue;
+		if (!n.label.length && (w * h) / full < 0.20) continue;
 		[cards addObject:n];
 	}
 	return cards;
@@ -2653,6 +2764,18 @@ static void MiaoCloseAllTabsInGrid(NSInteger tries, NSInteger stalls, void (^don
 		return;
 	}
 	NSArray<MiaoAXNode *> *cards = MiaoTabCards();
+	if (cards.count == 0 && MiaoInTabOverview() && tries > 0 && stalls < 5) {
+		/* Una sola preview enorme: AX non la classifica come card. La X
+		   Safari sta in alto a destra della miniatura. */
+		CGRect b = UIScreen.mainScreen.bounds;
+		CGPoint p = CGPointMake(b.size.width - 28, 108);
+		MiaoLog(@"chiudi griglia: 0 card, tap X unica");
+		MiaoTapPt(p, @"chiudi-x-unica");
+		MiaoAfter(MiaoBetween(0.55, 0.9), ^{
+			MiaoCloseAllTabsInGrid(tries - 1, stalls + 1, done);
+		});
+		return;
+	}
 	if (tries <= 0 || stalls >= 5 || cards.count == 0) {
 		MiaoLog([NSString stringWithFormat:
 			@"chiudi griglia: stop (giri %ld, fermi %ld, card %lu)\n%@",
@@ -2754,13 +2877,14 @@ static void MiaoCloseAllTabsHuman(void (^done)(BOOL ok)) {
  zero card, poi SpringBoard puo' killare.
  */
 static void MiaoActCloseAllTabs(void (^done)(BOOL ok)) {
+	BOOL all = MiaoCloseAllTabsAPI();
 	id bc = MiaoBrowser();
 	NSArray *tabs = MiaoTabList(bc);
 	NSInteger closed = 0;
 	for (id tab in [tabs reverseObjectEnumerator])
 		if (MiaoCloseTab(bc, tab)) closed++;
-	MiaoLog([NSString stringWithFormat:@"closetabs: API chiuse %ld di %lu",
-		(long)closed, (unsigned long)tabs.count]);
+	MiaoLog([NSString stringWithFormat:@"closetabs: API chiuse %ld di %lu closeAll=%d",
+		(long)closed, (unsigned long)tabs.count, all ? 1 : 0]);
 
 	void (^finish)(void) = ^{
 		BOOL ok = MiaoTabsLookClosed();
@@ -4838,9 +4962,9 @@ static void MiaoHandle(NSString *cmd) {
 				(void)inGrid;
 				MiaoCloseAllTabsInGrid(24, 0, ^(BOOL ok2) {
 					MiaoLog([NSString stringWithFormat:
-						@"closetabs: retry ok=%d (card %lu)",
-						ok2 ? 1 : 0, (unsigned long)MiaoTabCards().count]);
-					/* Gesto finito: si notifica sempre, cosi' SB non kill-a a meta'. */
+						@"closetabs: retry ok=%d (card %lu overview=%d pagine=%ld)",
+						ok2 ? 1 : 0, (unsigned long)MiaoTabCards().count,
+						MiaoInTabOverview() ? 1 : 0, (long)MiaoLoadedPageCount()]);
 					notify_post("com.noxlab.miao.tabsdone");
 				});
 			});
